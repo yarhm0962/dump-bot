@@ -95,7 +95,7 @@ async def on_ready():
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-@bot.group(name="db, invoke_without_command=True)
+@bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_command_message(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
