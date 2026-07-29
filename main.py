@@ -1,10 +1,7 @@
 from flask import Flask
 app = Flask(__name__)
 @app.route('/')
-def home(): return "✅ Bot is Online"
-from threading import Thread
-def run(): app.run(host="0.0.0.0", port=8080)
-Thread(target=run, daemon=True).start()
+def home(): return "✅ Service Running"
 
 import os
 import discord
@@ -98,7 +95,7 @@ async def on_ready():
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-@bot.group(name="db", invoke_without_command=True)
+@bot.group(name="db, invoke_without_command=True)
 async def db_group(ctx):
     await delete_command_message(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
@@ -180,7 +177,7 @@ async def fetch_command(ctx, *, link: str):
 @bot.command(name="env")
 async def envlog_command(ctx, *, link: str):
     await delete_command_message(ctx)
-    processing = await ctx.send(f"Scanning anti-log {ctx.author.mention}...")
+    processing = await ctx.send(f"Scanning anti-environment logger {ctx.author.mention}...")
     try:
         url_match = re.search(r'https?://[^\s"\'<>)]+', link)
         if not url_match:
@@ -197,4 +194,8 @@ async def envlog_command(ctx, *, link: str):
     except Exception as e:
         await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
 
-bot.run(TOKEN)
+if __name__ == "__main__":
+    from threading import Thread
+    def run_flask(): app.run(host="0.0.0.0", port=10000)
+    Thread(target=run_flask, daemon=True).start()
+    bot.run(TOKEN)
