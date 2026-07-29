@@ -11,7 +11,6 @@ import aiohttp
 import re
 import io
 import base64
-import string
 import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
@@ -43,101 +42,126 @@ async def delete_cmds_only(ctx):
         try: await ctx.message.delete()
         except: pass
 
-async def fetch_content(url: str) -> str:
-    async with aiohttp.ClientSession() as session:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.1 Safari/537.36",
-            "Referer": "https://roblox.com/"
-        }
-        async with session.get(url) as resp:
-            return await resp.text()
+async def fetch_content(url: str) -> tuple[bool, str, str]:
+    valid_url = re.search(r'https?://[^\s"\'<>)]+', url)
+    if not valid_url:
+        return False, "", "Invalid URL format detected"
+    clean_url = valid_url.group(0)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept": "text/plain,application/lua,text/x-lua"
+            }
+            async with session.get(clean_url, headers=headers, allow_redirects=True) as resp:
+                if resp.status == 404:
+                    return False, "", "❌ Server returned 404: File/Page Not Found"
+                if resp.status == 403:
+                    return False, "", "❌ Server returned 403: Access Forbidden / Blocked"
+                if resp.status >= 400:
+                    return False, "", f"❌ Server Error: Status Code {resp.status}"
+                body = await resp.text(encoding="utf-8", errors="replace")
+                return True, body, "Success"
+    except aiohttp.ClientConnectionError:
+        return False, "", "❌ Could not connect to domain / DNS failed"
+    except aiohttp.ClientTimeout:
+        return False, "", "❌ Request timed out, site took too long to respond"
+    except Exception as e:
+        return False, "", f"❌ Fetch Error: {str(e)[:100]}"
 
 def advanced_deobfuscate(code: str) -> str:
-    original = code
+    if not code or len(code.strip()) < 5: return "No valid script content found"
     result = code
 
     result = re.sub(r'--\[\[=*\[.*?\]=*\]', '', result, flags=re.DOTALL)
     result = re.sub(r'--.*?$', '', result, flags=re.MULTILINE)
     result = re.sub(r'^\s*#![^\n]*\n', '', result)
+    result = re.sub(r'\s+', ' ', result)
 
-    xor_pattern = r'local\s+\w+\s*=\s*\{([^}]+)\}.*?for.*?\w+\s*=\s*(\d+)\s*,.*?\1\s*\^=\s*string\.byte\('
-    if re.search(xor_pattern, result, re.DOTALL):
+    try:
+        b64_pattern = r'loadstring\s*\(\s*base64\.decode\s*\(\s*["\']([A-Za-z0-9+/=]+)["\']\s*\)'
+        m = re.search(b64_pattern, result)
+        if m:
+            decoded = base64.b64decode(m.group(1)).decode('utf-8', errors='replace')
+            result = decoded
+    except: pass
+
+    try:
+        xor_key = re.search(r'local\s+\w+\s*=\s*["\']([^"\']{4,})["\']', result)
+        xor_data = re.search(r'["\']([A-Za-z0-9+/=]{16,})["\']', result)
+        if xor_key and xor_data:
+            key = xor_key.group(1)
+            data = base64.b64decode(xor_data.group(2)).decode('latin1')
+            out = []
+            for idx, ch in enumerate(data):
+                k = ord(key[idx % len(key)])
+                out.append(chr(ord(ch) ^ k))
+            result = ''.join(out)
+    except: pass
+
+    wearedevs = re.search(r'string\.char\(([\d,\s]+)\)', result)
+    if wearedevs:
         try:
-            key_match = re.search(r'local\s+\w+\s*=\s*["\']([^"\']+)["\']', result)
-            data_match = re.search(r'local\s+\w+\s*=\s*([\'"])([0-9a-fA-F+/=]+)\1', result)
-            if key_match and data_match:
-                key = key_match.group(1)
-                b64_data = data_match.group(2)
-                decoded = base64.b64decode(b64_data).decode('latin1')
-                deobf = []
-                for i, c in enumerate(decoded):
-                    kc = key[i % len(key)]
-                    deobf.append(chr(ord(c) ^ ord(kc)))
-                result = ''.join(deobf)
+            nums = [int(x.strip()) for x in wearedevs.group(1).split(',') if x.strip().isdigit()]
+            result = ''.join(chr(n) for n in nums)
         except: pass
 
-    wearedevs_patterns = [
-        r'local\s+_=string\.dump\(loadstring\(string\.char\((\d+(?:,\d+)*)\)\)\)',
-        r'local\s+\w+\s*=\s*0x[0-9a-fA-F]+\s*\^\s*0x[0-9a-fA-F]+',
-        r'for\s+\w+\s*=\s*\d+\s*,\s*string\.len\(\w+\)\s*do\s*.*?\w+\s*=\s*\w+\s*\^\s*\(\w+%#\w+\)'
-    ]
-    for pat in wearedevs_patterns:
-        if re.search(pat, result):
-            try:
-                nums = re.search(pat, result).group(1).split(',')
-                chars = ''.join(chr(int(n)) for n in nums)
-                result = chars
-                break
-            except: pass
-
-    return result if len(result.strip()) > 10 else original
+    return result.strip()
 
 def scan_envlog(code: str) -> dict:
     findings = {"risks": [], "severity": "Safe", "count": 0}
     patterns = {
-        "Galactic Env Logger": r'Galactic|galactic.*logger|envlog',
-        "String Dump Extraction": r'string\.dump\s*\(',
-        "Hooked Functions": r'hookfunction|newcclosure|hookmetamethod',
-        "Code Dumping": r'writefile|readfile.*\.lua|listfiles',
-        "Remote Logging": r'HttpPost|HttpGet.*discord\.com/api/webhook'
+        "Galactic / Env Logger": r'galactic|env.?log|dump.?script',
+        "Bytecode Extraction": r'string\.dump\(',
+        "Function Hooking": r'hookfunction|cclosure|hookmetamethod',
+        "File Operations": r'writefile|readfile|makefolder|listfiles',
+        "Data Exfiltration": r'HttpPost|discord\.com/api/webhook|pastebin|transfer.sh',
+        "Debug Interception": r'debug\.getupvalue|debug\.getlocal|getfenv'
     }
     for name, pat in patterns.items():
         if re.search(pat, code, re.IGNORECASE):
-            findings["risks"].append(f"⚠️ {name} Detected")
+            findings["risks"].append(f"⚠️ {name}")
             findings["count"] += 1
     if findings["count"] >= 3: findings["severity"] = "High Risk"
     elif findings["count"] >= 1: findings["severity"] = "Low Risk"
     return findings
 
 def make_result_embed(ctx, title: str, content: str, status: str):
-    size_kb = len(content.encode('utf-8')) / 1024
-    if size_kb > 10:
-        file = File(io.BytesIO(content.encode('utf-8')), filename="result.lua")
-        emb = discord.Embed(title=title, color=0x3498db, description=f"{ctx.author.mention}\n✅ Completed | Status: **{status}**\n📦 File Size: `{round(size_kb, 2)} KB`\n📎 Too large for preview, sent as attachment")
-        return emb, file
-    else:
-        preview = content[:1900] + ("\n... (truncated)" if len(content) > 1900 else "")
-        emb = discord.Embed(title=title, color=0x2ecc71, description=f"{ctx.author.mention}\n✅ Completed | Status: **{status}**\n📦 Size: `{round(size_kb, 2)} KB`\n\n```lua\n{preview}\n```")
+    if not content or len(content.strip()) < 3:
+        emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Result is empty or too small to process\nStatus: **{status}**")
         return emb, None
+    content_bytes = content.encode('utf-8')
+    size_kb = len(content_bytes) / 1024
+    file = None
+    if size_kb > 10 or len(content) > 1900:
+        file = File(io.BytesIO(content_bytes), filename="processed_result.lua")
+        desc = f"{ctx.author.mention}\n✅ Completed | Status: **{status}**\n📦 Size: `{round(size_kb, 2)} KB`\n📎 Sent as file to keep full content safe"
+        emb = discord.Embed(title=title, color=0x3498db, description=desc)
+    else:
+        preview = content[:1850] + ("\n... [truncated end]" if len(content) > 1850 else "")
+        desc = f"{ctx.author.mention}\n✅ Completed | Status: **{status}**\n📦 Size: `{round(size_kb, 2)} KB`\n\n```lua\n{preview}\n```"
+        emb = discord.Embed(title=title, color=0x2ecc71, description=desc)
+    emb.set_footer(text=f"Requested by: {ctx.author}")
+    return emb, file
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
-    if db is not None: print(f"✅ Database Ready: {db.name}")
+    if db: print(f"✅ Database Ready: {db.name}")
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
     emb.add_field(name="`db status`", value="Check database connection", inline=False)
-    emb.add_field(name="`db clear`", value="Clear all stored data (owner only)", inline=False)
+    emb.add_field(name="`db clear`", value="Clear stored data (owner only)", inline=False)
     await ctx.send(embed=emb)
 
 @db_group.command(name="status")
 async def db_status(ctx):
     await delete_cmds_only(ctx)
-    if mongo_client is not None and db is not None:
-        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nMongoDB is connected and working properly")
+    if mongo_client and db:
+        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nMongoDB connected and working")
     else:
         emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot connected to database")
     await ctx.send(embed=emb)
@@ -146,10 +170,10 @@ async def db_status(ctx):
 @commands.is_owner()
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
-    if settings_col is not None and logs_col is not None:
+    if settings_col and logs_col:
         settings_col.delete_many({})
         logs_col.delete_many({})
-        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll database data cleared successfully")
+        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared successfully")
     else:
         emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nDatabase not available")
     await ctx.send(embed=emb)
@@ -157,76 +181,77 @@ async def db_clear(ctx):
 @bot.command(name="cmds")
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
-    emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}, here are all available commands:")
-    emb.add_field(name="`.l <link/loadstring>`", value="Advanced deobfuscation + preview/file output", inline=False)
-    emb.add_field(name="`.get <link/loadstring>`", value="Fetch raw source code", inline=False)
-    emb.add_field(name="`.env <link/loadstring>`", value="Full env log & anti-tamper deep scan", inline=False)
-    emb.add_field(name="`.db`", value="Database management", inline=False)
-    emb.set_footer(text="Smart preview: shows code under 10KB, sends file for larger")
+    emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}, available commands:")
+    emb.add_field(name="`.l <link/loadstring>`", value="Advanced deobfuscation", inline=False)
+    emb.add_field(name="`.get <link/loadstring>`", value="Fetch raw full source", inline=False)
+    emb.add_field(name="`.env <link/loadstring>`", value="Deep anti-log scan", inline=False)
+    emb.add_field(name="`.db`", value="Database tools", inline=False)
+    emb.set_footer(text="Smart output: preview if small, file if large/long")
     await ctx.send(embed=emb)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link:
-        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.l https://example.com/script.lua`\n`.l loadstring(game:HttpGet('link'))()`")
-        await ctx.send(embed=emb)
-        return
-    processing = await ctx.send(f"🔄 Processing advanced deobfuscation {ctx.author.mention}...")
-    try:
-        code = await fetch_content(link)
-        deobf_result = advanced_deobfuscate(code)
-        emb, file = make_result_embed(ctx, "🔓 Deobfuscation Complete", deobf_result, "Full Recovery")
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nPlease include the full link or loadstring!\nExample: `.l https://api-booster.onrender.com/script.lua`")
+        return await ctx.reply(embed=emb, mention_author=True)
+    processing = await ctx.reply(f"🔄 Processing deobfuscation {ctx.author.mention}...", mention_author=True)
+    ok, content, msg = await fetch_content(link)
+    if not ok:
         await processing.delete()
-        if file: await ctx.send(embed=emb, file=file)
-        else: await ctx.send(embed=emb)
-        if logs_col is not None:
-            logs_col.insert_one({"user_id": ctx.author.id, "action": "deobfuscate", "url": link, "time": discord.utils.utcnow()})
-    except Exception as e:
-        await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
+        err_emb = discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}")
+        return await ctx.reply(embed=err_emb, mention_author=True)
+    result = advanced_deobfuscate(content)
+    emb, file = make_result_embed(ctx, "🔓 Deobfuscation Complete", result, "Successfully Processed")
+    await processing.delete()
+    if file:
+        await ctx.reply(embed=emb, file=file, mention_author=True)
+    else:
+        await ctx.reply(embed=emb, mention_author=True)
+    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "url": link, "at": discord.utils.utcnow()})
 
 @bot.command(name="get")
 async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link:
-        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.get https://example.com/script.lua`")
-        await ctx.send(embed=emb)
-        return
-    processing = await ctx.send(f"🔄 Fetching source {ctx.author.mention}...")
-    try:
-        code = await fetch_content(link)
-        emb, file = make_result_embed(ctx, "📄 Raw Source Code", code, "Fetched")
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nPlease include the full link!\nExample: `.get https://example.com/script.lua`")
+        return await ctx.reply(embed=emb, mention_author=True)
+    processing = await ctx.reply(f"🔄 Fetching source {ctx.author.mention}...", mention_author=True)
+    ok, content, msg = await fetch_content(link)
+    if not ok:
         await processing.delete()
-        if file: await ctx.send(embed=emb, file=file)
-        else: await ctx.send(embed=emb)
-        if logs_col is not None:
-            logs_col.insert_one({"user_id": ctx.author.id, "action": "fetch", "url": link, "time": discord.utils.utcnow()})
-    except Exception as e:
-        await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
+        err_emb = discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}")
+        return await ctx.reply(embed=err_emb, mention_author=True)
+    emb, file = make_result_embed(ctx, "📄 Raw Source Code", content, "Fetched Successfully")
+    await processing.delete()
+    if file:
+        await ctx.reply(embed=emb, file=file, mention_author=True)
+    else:
+        await ctx.reply(embed=emb, mention_author=True)
+    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": link, "at": discord.utils.utcnow()})
 
 @bot.command(name="env")
 async def envlog_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link:
-        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.env https://example.com/script.lua`")
-        await ctx.send(embed=emb)
-        return
-    processing = await ctx.send(f"🔍 Running deep env log scan {ctx.author.mention}...")
-    try:
-        code = await fetch_content(link)
-        scan = scan_envlog(code)
-        emb = discord.Embed(title="🛡️ Environment Scan Report", color=0xe67e22, description=f"{ctx.author.mention}\n**Severity Level:** `{scan['severity']}`\n**Threats Found:** `{scan['count']}`\n\nDetected items:")
-        if scan["risks"]:
-            for r in scan["risks"]: emb.add_field(name=r, value="—", inline=False)
-        else:
-            emb.description += "\n✅ No env loggers or dumpers found"
-        emb.add_field(name="Recommendation", value="Add anti-tamper checks if any risks appear", inline=False)
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nPlease include the full link or loadstring!")
+        return await ctx.reply(embed=emb, mention_author=True)
+    processing = await ctx.reply(f"🔍 Running deep scan {ctx.author.mention}...", mention_author=True)
+    ok, content, msg = await fetch_content(link)
+    if not ok:
         await processing.delete()
-        await ctx.send(embed=emb)
-        if logs_col is not None:
-            logs_col.insert_one({"user_id": ctx.author.id, "action": "envscan", "url": link, "time": discord.utils.utcnow()})
-    except Exception as e:
-        await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
+        err_emb = discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}")
+        return await ctx.reply(embed=err_emb, mention_author=True)
+    scan = scan_envlog(content)
+    await processing.delete()
+    emb = discord.Embed(title="🛡️ Environment Scan Report", color=0xe67e22, description=f"{ctx.author.mention}\n**Severity:** `{scan['severity']}`\n**Total Risks:** `{scan['count']}`\n")
+    if scan["risks"]:
+        for r in scan["risks"]: emb.add_field(name=r, value="— Detected", inline=False)
+    else:
+        emb.description += "\n✅ No env loggers, dumpers or anti-tamper bypass found"
+    emb.add_field(name="Info", value="Scan detects most common logging tools used right now", inline=False)
+    await ctx.reply(embed=emb, mention_author=True)
+    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "envscan", "url": link, "at": discord.utils.utcnow()})
 
 if __name__ == "__main__":
     from threading import Thread
