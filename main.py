@@ -59,7 +59,6 @@ def advanced_deobfuscate(code: str) -> str:
     result = re.sub(r'--\[\[=*\[.*?\]=*\]', '', result, flags=re.DOTALL)
     result = re.sub(r'--.*?$', '', result, flags=re.MULTILINE)
     result = re.sub(r'^\s*#![^\n]*\n', '', result)
-    result = re.sub(r'(local\s+)([a-zA-Z_]\w*)(\s*=\s*)(["\'])(.*?)\4', r'\1\2\3\4\5\4', result)
 
     xor_pattern = r'local\s+\w+\s*=\s*\{([^}]+)\}.*?for.*?\w+\s*=\s*(\d+)\s*,.*?\1\s*\^=\s*string\.byte\('
     if re.search(xor_pattern, result, re.DOTALL):
@@ -77,45 +76,30 @@ def advanced_deobfuscate(code: str) -> str:
                 result = ''.join(deobf)
         except: pass
 
-    result = re.sub(r'loadstring\s*\(\s*game:HttpGet\s*\(\s*["\'][^"\']+["\']\s*\)\s*\)', r'-- Fetched script', result)
-    result = re.sub(r'game:HttpGet\s*\(\s*["\'][^"\']+["\']\s*,\s*true\s*\)', r'-- Fetched raw', result)
-    result = re.sub(r'(\w+)\s*=\s*\1\s*\^\s*(\d+)', r'\1 = bit32.bxor(\1, \2)', result)
-    result = re.sub(r'rawget\s*\(\s*(\w+)\s*,\s*["\'](\w+)["\']\s*\)', r'\1.\2', result)
-    result = re.sub(r'rawset\s*\(\s*(\w+)\s*,\s*["\'](\w+)["\']\s*,\s*([^)]+)\s*\)', r'\1.\2 = \3', result)
-    result = re.sub(r'\b(if|for|while|return|local|function|end|then|else|elseif|do|repeat|until|and|or|not)\b', lambda m: m.group(1), result)
-
     wearedevs_patterns = [
         r'local\s+_=string\.dump\(loadstring\(string\.char\((\d+(?:,\d+)*)\)\)\)',
         r'local\s+\w+\s*=\s*0x[0-9a-fA-F]+\s*\^\s*0x[0-9a-fA-F]+',
-        r'for\s+\w+\s*=\s*\d+\s*,\s*string\.len\(\w+\)\s*do\s*.*?\w+\s*=\s*\w+\s*\^\s*\(\w+%#\w+\)',
-        r'loadstring\(game:HttpGet\("https://wearedevs\.net/scripts/\w+"\)\)\(\)'
+        r'for\s+\w+\s*=\s*\d+\s*,\s*string\.len\(\w+\)\s*do\s*.*?\w+\s*=\s*\w+\s*\^\s*\(\w+%#\w+\)'
     ]
     for pat in wearedevs_patterns:
         if re.search(pat, result):
             try:
                 nums = re.search(pat, result).group(1).split(',')
                 chars = ''.join(chr(int(n)) for n in nums)
-                result = loadstring(f'return {chars}')()
+                result = chars
                 break
             except: pass
 
     return result if len(result.strip()) > 10 else original
 
 def scan_envlog(code: str) -> dict:
-    findings = {
-        "risks": [],
-        "severity": "Safe",
-        "count": 0
-    }
+    findings = {"risks": [], "severity": "Safe", "count": 0}
     patterns = {
         "Galactic Env Logger": r'Galactic|galactic.*logger|envlog',
         "String Dump Extraction": r'string\.dump\s*\(',
         "Hooked Functions": r'hookfunction|newcclosure|hookmetamethod',
-        "Global Interception": r'getfenv|setfenv|getmetatable.*_G',
         "Code Dumping": r'writefile|readfile.*\.lua|listfiles',
-        "Remote Logging": r'HttpPost|HttpGet.*discord\.com/api/webhook',
-        "Bytecode Scan": r'tostring\(loadstring\(',
-        "Debug Tracer": r'debug\.getupvalue|debug\.upvaluejoin'
+        "Remote Logging": r'HttpPost|HttpGet.*discord\.com/api/webhook'
     }
     for name, pat in patterns.items():
         if re.search(pat, code, re.IGNORECASE):
@@ -182,8 +166,12 @@ async def show_commands(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="l")
-async def deobf_command(ctx, *, link: str):
+async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
+    if not link:
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.l https://example.com/script.lua`\n`.l loadstring(game:HttpGet('link'))()`")
+        await ctx.send(embed=emb)
+        return
     processing = await ctx.send(f"🔄 Processing advanced deobfuscation {ctx.author.mention}...")
     try:
         code = await fetch_content(link)
@@ -198,8 +186,12 @@ async def deobf_command(ctx, *, link: str):
         await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
 
 @bot.command(name="get")
-async def fetch_command(ctx, *, link: str):
+async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
+    if not link:
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.get https://example.com/script.lua`")
+        await ctx.send(embed=emb)
+        return
     processing = await ctx.send(f"🔄 Fetching source {ctx.author.mention}...")
     try:
         code = await fetch_content(link)
@@ -213,8 +205,12 @@ async def fetch_command(ctx, *, link: str):
         await processing.edit(content=f"❌ {ctx.author.mention} Error: {str(e)[:120]}")
 
 @bot.command(name="env")
-async def envlog_command(ctx, *, link: str):
+async def envlog_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
+    if not link:
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nYou need to include the script link or full loadstring!\n\n**Correct usage example:**\n`.env https://example.com/script.lua`")
+        await ctx.send(embed=emb)
+        return
     processing = await ctx.send(f"🔍 Running deep env log scan {ctx.author.mention}...")
     try:
         code = await fetch_content(link)
