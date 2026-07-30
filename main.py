@@ -379,7 +379,7 @@ async def query_deepseek(user_message: str, guild_name: str = None, user_name: s
         "max_tokens": 1024
     }
     try:
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 "https://api.deepseek.com/v1/chat/completions",
@@ -391,10 +391,14 @@ async def query_deepseek(user_message: str, guild_name: str = None, user_name: s
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
+                    if "choices" in data and len(data["choices"]) > 0:
+                        return data["choices"][0]["message"]["content"].strip()
+                    else:
+                        print("DeepSeek response missing 'choices'")
+                        return None
                 else:
                     error_text = await resp.text()
-                    print(f"DeepSeek API error: {resp.status} {error_text}")
+                    print(f"DeepSeek API error: {resp.status} - {error_text}")
                     return None
     except asyncio.TimeoutError:
         print("DeepSeek request timed out")
