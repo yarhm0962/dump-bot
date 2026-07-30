@@ -16,6 +16,7 @@ import json
 import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
+import asyncio
 
 TOKEN = os.getenv("TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -344,13 +345,29 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-async def query_deepseek(user_message: str) -> str:
+async def query_deepseek(user_message: str, guild_name: str = None, user_name: str = None, channel_name: str = None) -> str:
+    command_list = (
+        "`.l <link/loadstring/code>` - Full deobfuscation with anti-env detection\n"
+        "`.get <link/loadstring>` - Raw source fetch and decode\n"
+        "`.env <link/loadstring>` - Deep anti-env bypass and unpack\n"
+        "`.obf <link/loadstring/code>` - XOR obfuscate Lua code\n"
+        "`.talking <#channel/id>` (admin) - Toggle AI auto-reply in a channel\n"
+        "`.db status` - Check database connection\n"
+        "`.db clear` (owner) - Clear stored data\n"
+        "`.cmds` - Show this command list"
+    )
+    context_info = f"Server: {guild_name or 'Direct Message'}, Channel: {channel_name or 'Unknown'}, User: {user_name or 'Unknown'}"
     system_prompt = (
-        "You are an AI assistant integrated into the RblXLua Discord bot. "
-        "You are knowledgeable about Lua scripting, Roblox, obfuscation, deobfuscation, Discord bot development, web hosting, and all RblXLua tools. "
-        "You respond clearly and directly, matching the style of the bot's owner: no unnecessary emojis, concise and helpful. "
-        "You know all commands: .l (deobfuscation), .get (raw fetch), .env (anti-env bypass), .obf (XOR obfuscation), .cmds, .db. "
-        "You are helpful for questions about Lua, Python, bot development, and RblXLua systems."
+        f"You are a highly intelligent and helpful AI assistant integrated into the RblXLua Discord bot. "
+        f"You are an expert in Lua scripting, Roblox, obfuscation, deobfuscation, Discord bot development, web hosting, and all RblXLua tools. "
+        f"You respond clearly, concisely, and with a friendly, helpful tone. Always greet the user and mention their name if known. "
+        f"You are aware of the current context: {context_info}. "
+        f"The bot's prefix is `.`. Here are the available commands:\n{command_list}\n"
+        f"You are knowledgeable about how each command works and can explain them. "
+        f"When users ask about deobfuscation or Lua code, provide insightful and accurate answers. "
+        f"If the user asks for help with a specific command, explain its usage and what it does. "
+        f"Be proactive and offer additional tips or suggestions if relevant. "
+        f"Stay within the scope of the bot's capabilities and Lua/Roblox ecosystem."
     )
     payload = {
         "model": "deepseek-chat",
@@ -405,14 +422,17 @@ async def on_message(message):
     if message.content.startswith(bot.command_prefix):
         return
     if message.content.strip() == "Hi":
-        await message.reply("Hello! This is a test reply. The AI system is working.", mention_author=False)
+        await message.reply(f"Hello {message.author.mention}! This is a test reply. The AI system is working perfectly.", mention_author=True)
         return
     async with message.channel.typing():
-        reply = await query_deepseek(message.content)
+        guild_name = message.guild.name if message.guild else None
+        user_name = message.author.display_name
+        channel_name = message.channel.name if hasattr(message.channel, 'name') else None
+        reply = await query_deepseek(message.content, guild_name, user_name, channel_name)
         if reply:
-            await message.reply(reply, mention_author=False)
+            await message.reply(reply, mention_author=True)
         else:
-            await message.reply("⚠️ AI service is currently unavailable. Please try again later.", mention_author=False)
+            await message.reply(f"⚠️ {message.author.mention} AI service is currently unavailable. Please try again later.", mention_author=True)
 
 @bot.command(name="talking")
 @commands.has_permissions(manage_channels=True)
