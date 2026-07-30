@@ -7,7 +7,6 @@ import os
 import discord
 from discord import File
 from discord.ext import commands
-from discord import app_commands
 import aiohttp
 import re
 import random
@@ -383,10 +382,6 @@ async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
-    await bot.tree.sync()
-    for guild in bot.guilds:
-        await bot.tree.sync(guild=guild)
-    print("✅ Slash commands synced")
 
 @bot.event
 async def on_message(message):
@@ -402,17 +397,20 @@ async def on_message(message):
         if reply:
             await message.reply(reply, mention_author=False)
 
-@bot.tree.command(name="talking", description="Toggle AI chat on/off for a channel")
-@app_commands.describe(channel="Channel to enable/disable AI replies")
-async def talking(interaction: discord.Interaction, channel: discord.TextChannel):
+@bot.command(name="talking")
+async def talking_command(ctx, channel: discord.TextChannel = None):
+    await delete_cmds_only(ctx)
+    if not channel:
+        emb = discord.Embed(title="⚠️ Missing Channel", color=0xf39c12, description=f"{ctx.author.mention}\nUsage: `.talking #channel` or `.talking channel_id`")
+        return await ctx.reply(embed=emb, mention_author=True)
     if channel.id in ai_enabled_channels:
         ai_enabled_channels.discard(channel.id)
         save_ai_channels()
-        await interaction.response.send_message(f"AI chat disabled in {channel.mention}", ephemeral=True)
+        await ctx.reply(f"AI chat disabled in {channel.mention}", mention_author=True)
     else:
         ai_enabled_channels.add(channel.id)
         save_ai_channels()
-        await interaction.response.send_message(f"AI chat enabled in {channel.mention}", ephemeral=True)
+        await ctx.reply(f"AI chat enabled in {channel.mention}", mention_author=True)
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
@@ -444,7 +442,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.get <link/loadstring>`", value="Raw decoded source", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Deep env/anti-env scan + unpack", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
-    emb.add_field(name="`/talking`", value="Toggle AI auto-reply in a channel", inline=False)
+    emb.add_field(name="`.talking <#channel/id>`", value="Toggle AI auto-reply in a channel", inline=False)
     emb.set_footer(text="Now fully supports XOR patterns + Fualmor style protection")
     await ctx.send(embed=emb)
 
