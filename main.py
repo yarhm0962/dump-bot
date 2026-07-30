@@ -292,7 +292,7 @@ async def db_clear(ctx):
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
-    emb.add_field(name="`.l <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
+    emb.add_field(name="`.l <link/loadstring/code>`", value="Full decode + anti-env detection", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Raw decoded source", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Deep env/anti-env scan + unpack", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
@@ -300,39 +300,22 @@ async def show_commands(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="l")
-async def xor_obf_command(ctx, *, link=None):
+async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
-    if link:
-        ok, content, msg = await fetch_content(link)
-        if not ok:
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-    else:
-        content = await extract_code(ctx)
+    if not link: content = await extract_code(ctx)
+    else: ok, content, msg = await fetch_content(link)
+    if link and not ok:
+        return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
     if not content:
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
-    proc = await ctx.reply(f"🔐 Obfuscating with XOR {ctx.author.mention}...", mention_author=True)
-    output = xor_obfuscate(content)
-    size_b = output.encode('utf-8')
-    size_kb = len(size_b) / 1024
-    file = None
-    desc = f"{ctx.author.mention}\n**Obfuscation:** XOR with random key\n**Size:** `{round(size_kb,2)} KB`"
-    if size_kb > 10 or len(output) > 1800:
-        file = File(io.BytesIO(size_b), filename="obfuscated.lua")
-        desc += f"\n📦 Full code sent as file"
-        emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
-    else:
-        preview = output[:1500] + ("\n... [truncated]" if len(output) > 1500 else "")
-        desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
-        emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
-    emb.set_footer(text=f"Requested by {ctx.author}")
+    proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
+    report = deep_unpack(content)
+    emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
     await proc.delete()
-    if file:
-        await ctx.reply(embed=emb, file=file, mention_author=True)
-    else:
-        await ctx.reply(embed=emb, mention_author=True)
-    if logs_col:
-        logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    if file: await ctx.reply(embed=emb, file=file, mention_author=True)
+    else: await ctx.reply(embed=emb, mention_author=True)
+    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": report["obfuscator"]["name"], "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
 
 @bot.command(name="get")
 async def fetch_command(ctx, *, link=None):
