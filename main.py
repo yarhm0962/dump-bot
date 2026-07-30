@@ -41,7 +41,6 @@ except Exception as e:
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
-tree = app_commands.CommandTree(bot)
 
 ai_enabled_channels = set()
 
@@ -384,7 +383,7 @@ async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
-    await tree.sync()
+    await bot.tree.sync()
     print("✅ Slash commands synced")
 
 @bot.event
@@ -401,7 +400,7 @@ async def on_message(message):
         if reply:
             await message.reply(reply, mention_author=False)
 
-@tree.command(name="talking", description="Toggle AI chat on/off for a channel")
+@bot.tree.command(name="talking", description="Toggle AI chat on/off for a channel")
 @app_commands.describe(channel="Channel to enable/disable AI replies")
 async def talking(interaction: discord.Interaction, channel: discord.TextChannel):
     if channel.id in ai_enabled_channels:
