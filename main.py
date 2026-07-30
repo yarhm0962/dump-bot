@@ -7,6 +7,7 @@ import os
 import discord
 from discord import File
 from discord.ext import commands
+from discord import app_commands
 import aiohttp
 import re
 import random
@@ -19,6 +20,8 @@ from pymongo.server_api import ServerApi
 
 TOKEN = os.getenv("TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI")
+DEEPSEEK_API_KEY = "sk-fd2727bedcd4402f98f82dad020c2d6c"
+AI_CHANNELS_FILE = "ai_channels.json"
 
 mongo_client = None
 db = None
@@ -38,6 +41,24 @@ except Exception as e:
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+tree = app_commands.CommandTree(bot)
+
+ai_enabled_channels = set()
+
+def load_ai_channels():
+    global ai_enabled_channels
+    try:
+        with open(AI_CHANNELS_FILE, "r") as f:
+            data = json.load(f)
+            ai_enabled_channels = set(data.get("channels", []))
+    except:
+        ai_enabled_channels = set()
+
+def save_ai_channels():
+    with open(AI_CHANNELS_FILE, "w") as f:
+        json.dump({"channels": list(ai_enabled_channels)}, f)
+
+load_ai_channels()
 
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
@@ -322,11 +343,75 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
+async def query_deepseek(user_message: str) -> str:
+    system_prompt = (
+        "You are an AI assistant integrated into the RblXLua Discord bot. "
+        "You are knowledgeable about Lua scripting, Roblox, obfuscation, deobfuscation, Discord bot development, web hosting, and all RblXLua tools. "
+        "You respond clearly and directly, matching the style of the bot's owner: no unnecessary emojis, concise and helpful. "
+        "You know all commands: .l (deobfuscation), .get (raw fetch), .env (anti-env bypass), .obf (XOR obfuscation), .cmds, .db. "
+        "You are helpful for questions about Lua, Python, bot development, and RblXLua systems."
+    )
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+                else:
+                    return None
+    except:
+        return None
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
+    await tree.sync()
+    print("✅ Slash commands synced")
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
+    if message.channel.id not in ai_enabled_channels:
+        return
+    if message.content.startswith(bot.command_prefix):
+        return
+    async with message.channel.typing():
+        reply = await query_deepseek(message.content)
+        if reply:
+            await message.reply(reply, mention_author=False)
+
+@tree.command(name="talking", description="Toggle AI chat on/off for a channel")
+@app_commands.describe(channel="Channel to enable/disable AI replies")
+async def talking(interaction: discord.Interaction, channel: discord.TextChannel):
+    if channel.id in ai_enabled_channels:
+        ai_enabled_channels.discard(channel.id)
+        save_ai_channels()
+        await interaction.response.send_message(f"AI chat disabled in {channel.mention}", ephemeral=True)
+    else:
+        ai_enabled_channels.add(channel.id)
+        save_ai_channels()
+        await interaction.response.send_message(f"AI chat enabled in {channel.mention}", ephemeral=True)
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
@@ -358,6 +443,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.get <link/loadstring>`", value="Raw decoded source", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Deep env/anti-env scan + unpack", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
+    emb.add_field(name="`/talking`", value="Toggle AI auto-reply in a channel", inline=False)
     emb.set_footer(text="Now fully supports XOR patterns + Fualmor style protection")
     await ctx.send(embed=emb)
 
