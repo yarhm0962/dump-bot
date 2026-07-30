@@ -362,24 +362,31 @@ async def query_deepseek(user_message: str) -> str:
         "max_tokens": 1024
     }
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                     "Content-Type": "application/json"
                 },
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=20)
+                json=payload
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"].strip()
                 else:
-                    print(f"❌ DeepSeek API error: {resp.status} {await resp.text()}")
+                    error_text = await resp.text()
+                    print(f"DeepSeek API error: {resp.status} {error_text}")
                     return None
+    except asyncio.TimeoutError:
+        print("DeepSeek request timed out")
+        return None
+    except aiohttp.ClientError as e:
+        print(f"DeepSeek client error: {e}")
+        return None
     except Exception as e:
-        print(f"❌ DeepSeek request exception: {e}")
+        print(f"DeepSeek unexpected error: {e}")
         return None
 
 @bot.event
@@ -390,26 +397,22 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    print(f"[on_message] Channel {message.channel.id} | Author {message.author} | Content: {message.content[:80]}")
     if message.author.bot:
-        print("[on_message] Ignored: author is bot")
         return
     await bot.process_commands(message)
-    print(f"[on_message] Enabled channels: {ai_enabled_channels}")
     if message.channel.id not in ai_enabled_channels:
-        print("[on_message] Channel not enabled for AI.")
         return
     if message.content.startswith(bot.command_prefix):
-        print("[on_message] Skipping AI because message is a command.")
         return
-    print("[on_message] Calling DeepSeek...")
+    if message.content.strip() == "Hi":
+        await message.reply("Hello! This is a test reply. The AI system is working.", mention_author=False)
+        return
     async with message.channel.typing():
         reply = await query_deepseek(message.content)
         if reply:
-            print("[on_message] AI reply received, sending.")
             await message.reply(reply, mention_author=False)
         else:
-            print("[on_message] AI reply was None.")
+            await message.reply("⚠️ AI service is currently unavailable. Please try again later.", mention_author=False)
 
 @bot.command(name="talking")
 @commands.has_permissions(manage_channels=True)
