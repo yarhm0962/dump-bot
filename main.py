@@ -19,6 +19,8 @@ from pymongo.server_api import ServerApi
 
 TOKEN = os.getenv("TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI")
+GUILD_ID = os.getenv("GUILD_ID")
+PREMIUM_ROLE_ID = os.getenv("PREMIUM_ROLE_ID")
 
 mongo_client = None
 db = None
@@ -39,15 +41,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# ---------- Global DM block ----------
+# ---------- Global DM block with Premium check ----------
 @bot.check
 async def block_dms(ctx):
     if ctx.guild is None:
+        # Check if the user has the Premium role in the main guild
+        try:
+            if GUILD_ID and PREMIUM_ROLE_ID:
+                guild = bot.get_guild(int(GUILD_ID))
+                if guild:
+                    member = guild.get_member(ctx.author.id)
+                    if member and int(PREMIUM_ROLE_ID) in [role.id for role in member.roles]:
+                        return True
+        except:
+            pass
         await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
         return False
     return True
 
-# ---------- Utility functions ----------
+# ---------- Utility functions (unchanged) ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
@@ -338,7 +350,7 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
 
-# ---------- Commands ----------
+# ---------- Commands (unchanged) ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
