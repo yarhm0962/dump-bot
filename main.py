@@ -398,6 +398,7 @@ async def on_message(message):
             await message.reply(reply, mention_author=False)
 
 @bot.command(name="talking")
+@commands.has_permissions(manage_channels=True)
 async def talking_command(ctx, channel: discord.TextChannel = None):
     await delete_cmds_only(ctx)
     if not channel:
@@ -411,6 +412,11 @@ async def talking_command(ctx, channel: discord.TextChannel = None):
         ai_enabled_channels.add(channel.id)
         save_ai_channels()
         await ctx.reply(f"AI chat enabled in {channel.mention}", mention_author=True)
+
+@talking_command.error
+async def talking_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("You need `Manage Channels` permission to use this command.", mention_author=True)
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
@@ -442,7 +448,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.get <link/loadstring>`", value="Raw decoded source", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Deep env/anti-env scan + unpack", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
-    emb.add_field(name="`.talking <#channel/id>`", value="Toggle AI auto-reply in a channel", inline=False)
+    emb.add_field(name="`.talking <#channel/id>` (admin)", value="Toggle AI auto-reply in a channel", inline=False)
     emb.set_footer(text="Now fully supports XOR patterns + Fualmor style protection")
     await ctx.send(embed=emb)
 
