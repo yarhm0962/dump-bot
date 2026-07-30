@@ -49,12 +49,15 @@ def load_ai_channels():
         with open(AI_CHANNELS_FILE, "r") as f:
             data = json.load(f)
             ai_enabled_channels = set(data.get("channels", []))
-    except:
+        print(f"✅ Loaded AI channels: {ai_enabled_channels}")
+    except Exception as e:
         ai_enabled_channels = set()
+        print(f"⚠️ Could not load ai_channels.json: {e}")
 
 def save_ai_channels():
     with open(AI_CHANNELS_FILE, "w") as f:
         json.dump({"channels": list(ai_enabled_channels)}, f)
+    print(f"💾 Saved AI channels: {ai_enabled_channels}")
 
 load_ai_channels()
 
@@ -373,8 +376,10 @@ async def query_deepseek(user_message: str) -> str:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"].strip()
                 else:
+                    print(f"❌ DeepSeek API error: {resp.status} {await resp.text()}")
                     return None
-    except:
+    except Exception as e:
+        print(f"❌ DeepSeek request exception: {e}")
         return None
 
 @bot.event
@@ -385,17 +390,26 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    print(f"[on_message] Channel {message.channel.id} | Author {message.author} | Content: {message.content[:80]}")
     if message.author.bot:
+        print("[on_message] Ignored: author is bot")
         return
     await bot.process_commands(message)
+    print(f"[on_message] Enabled channels: {ai_enabled_channels}")
     if message.channel.id not in ai_enabled_channels:
+        print("[on_message] Channel not enabled for AI.")
         return
     if message.content.startswith(bot.command_prefix):
+        print("[on_message] Skipping AI because message is a command.")
         return
+    print("[on_message] Calling DeepSeek...")
     async with message.channel.typing():
         reply = await query_deepseek(message.content)
         if reply:
+            print("[on_message] AI reply received, sending.")
             await message.reply(reply, mention_author=False)
+        else:
+            print("[on_message] AI reply was None.")
 
 @bot.command(name="talking")
 @commands.has_permissions(manage_channels=True)
