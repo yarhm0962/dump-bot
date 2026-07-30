@@ -36,7 +36,6 @@ except Exception as e:
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.attachments = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 async def delete_cmds_only(ctx):
