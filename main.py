@@ -443,23 +443,16 @@ async def env_command(ctx, *, link=None):
     bypass_result = dumper.full_bypass(content)
     patched_code = bypass_result["patched_code"]
     bypassed = bypass_result["bypassed_count"]
-    emulator_info = bypass_result["emulator_env"]
-    desc = f"{ctx.author.mention}\n**Bypassed anti-env checks:** `{bypassed}`\n**Status:** Patched & emulated"
+    if not patched_code:
+        patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
     size_b = patched_code.encode('utf-8')
     size_kb = len(size_b) / 1024
-    file = None
-    if size_kb > 10 or len(patched_code) > 1800:
-        file = File(io.BytesIO(size_b), filename="patched.lua")
-        desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
-        emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
-    else:
-        preview = patched_code[:1500] + ("\n... [truncated]" if len(patched_code) > 1500 else "")
-        desc += f"\n📦 Size: `{round(size_kb,2)} KB`\n\n**Preview:**\n```lua\n{preview}\n```"
-        emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
+    file = File(io.BytesIO(size_b), filename="patched.lua")
+    desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{bypassed}`\n**Size:** `{round(size_kb,2)} KB`\n📦 Patched script attached below."
+    emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
     emb.set_footer(text=f"Requested by {ctx.author}")
     await proc.delete()
-    if file: await ctx.reply(embed=emb, file=file, mention_author=True)
-    else: await ctx.reply(embed=emb, mention_author=True)
+    await ctx.reply(embed=emb, file=file, mention_author=True)
     if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
 
 @bot.command(name="obf")
