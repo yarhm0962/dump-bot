@@ -384,6 +384,8 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
     await bot.tree.sync()
+    for guild in bot.guilds:
+        await bot.tree.sync(guild=guild)
     print("✅ Slash commands synced")
 
 @bot.event
