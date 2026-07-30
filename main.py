@@ -230,20 +230,6 @@ class EnvBypassDumper:
             "loadstring", "load", "require"
         ]
 
-    def build_emulator(self):
-        return {
-            "_G": {}, "_ENV": {}, "game": True, "workspace": True,
-            "script": {"Name": "Script", "ClassName": "LocalScript"},
-            "Instance": True, "Players": {"LocalPlayer": True},
-            "HttpService": True, "RunService": True, "TweenService": True,
-            "UserInputService": True, "VirtualInputManager": True,
-            "getfenv": None, "setfenv": None, "getgenv": None,
-            "hookmetamethod": None, "unhookmetamethod": None,
-            "syn": None, "krnl": None, "scriptware": None, "fluxus": None,
-            "isexecutor": lambda: False, "checkcaller": lambda: False,
-            "getexecutorname": lambda: False
-        }
-
     def remove_anti_env_checks(self, src):
         patterns_remove = [
             r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end',
@@ -292,7 +278,6 @@ class EnvBypassDumper:
         out = self.inject_dummy_returns(out)
         return {
             "patched_code": out.strip(),
-            "emulator_env": json.dumps(self.build_emulator(), indent=2),
             "bypassed_count": len(re.findall(r'Kick|error|return', code)) - len(re.findall(r'Kick|error|return', out))
         }
 
@@ -387,23 +372,27 @@ async def deobf_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
-    dec = deobfuscate_code(content)
-    obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
-    confidence = 100 if dec["detected"] else 100
-    report = {
-        "obfuscator": {"name": obfuscator_name, "confidence": confidence},
-        "steps": [f"• {s}" for s in dec["steps"]],
-        "layers_reached": dec["layers_done"],
-        "max_layers": 12,
-        "anti_found": [f"• {a}" for a in dec["anti_found"]],
-        "status": dec["status"],
-        "result": dec["result"]
-    }
-    emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-    await proc.delete()
-    if file: await ctx.reply(embed=emb, file=file, mention_author=True)
-    else: await ctx.reply(embed=emb, mention_author=True)
-    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    try:
+        dec = deobfuscate_code(content)
+        obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
+        confidence = 100 if dec["detected"] else 100
+        report = {
+            "obfuscator": {"name": obfuscator_name, "confidence": confidence},
+            "steps": [f"• {s}" for s in dec["steps"]],
+            "layers_reached": dec["layers_done"],
+            "max_layers": 12,
+            "anti_found": [f"• {a}" for a in dec["anti_found"]],
+            "status": dec["status"],
+            "result": dec["result"]
+        }
+        emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+        await proc.delete()
+        if file: await ctx.reply(embed=emb, file=file, mention_author=True)
+        else: await ctx.reply(embed=emb, mention_author=True)
+        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="get")
 async def fetch_command(ctx, *, link=None):
@@ -418,15 +407,19 @@ async def fetch_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nExample: `.get https://example.com/file.lua`")
         return await ctx.reply(embed=emb, mention_author=True)
     proc = await ctx.reply(f"📄 Fetching & decoding {ctx.author.mention}...", mention_author=True)
-    ok, cont, msg = await fetch_content(link)
-    if not ok:
+    try:
+        ok, cont, msg = await fetch_content(link)
+        if not ok:
+            await proc.delete()
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+        emb, file = make_result_embed(ctx, "📄 Raw Source Code", raw=cont)
         await proc.delete()
-        return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-    emb, file = make_result_embed(ctx, "📄 Raw Source Code", raw=cont)
-    await proc.delete()
-    if file: await ctx.reply(embed=emb, file=file, mention_author=True)
-    else: await ctx.reply(embed=emb, mention_author=True)
-    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+        if file: await ctx.reply(embed=emb, file=file, mention_author=True)
+        else: await ctx.reply(embed=emb, mention_author=True)
+        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="env")
 async def env_command(ctx, *, link=None):
@@ -439,21 +432,25 @@ async def env_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
     proc = await ctx.reply(f"🛡️ Bypassing anti-env checks {ctx.author.mention}...", mention_author=True)
-    dumper = EnvBypassDumper()
-    bypass_result = dumper.full_bypass(content)
-    patched_code = bypass_result["patched_code"]
-    bypassed = bypass_result["bypassed_count"]
-    if not patched_code:
-        patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
-    size_b = patched_code.encode('utf-8')
-    size_kb = len(size_b) / 1024
-    file = File(io.BytesIO(size_b), filename="patched.lua")
-    desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{bypassed}`\n**Size:** `{round(size_kb,2)} KB`\n📦 Patched script attached below."
-    emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
-    emb.set_footer(text=f"Requested by {ctx.author}")
-    await proc.delete()
-    await ctx.reply(embed=emb, file=file, mention_author=True)
-    if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    try:
+        dumper = EnvBypassDumper()
+        bypass_result = dumper.full_bypass(content)
+        patched_code = bypass_result["patched_code"]
+        bypassed = bypass_result["bypassed_count"]
+        if not patched_code:
+            patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
+        size_b = patched_code.encode('utf-8')
+        size_kb = len(size_b) / 1024
+        file = File(io.BytesIO(size_b), filename="patched.lua")
+        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{bypassed}`\n**Size:** `{round(size_kb,2)} KB`\n📦 Patched script attached below."
+        emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
+        emb.set_footer(text=f"Requested by {ctx.author}")
+        await proc.delete()
+        await ctx.reply(embed=emb, file=file, mention_author=True)
+        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
@@ -468,27 +465,31 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
     proc = await ctx.reply(f"🔐 Obfuscating with XOR {ctx.author.mention}...", mention_author=True)
-    output = xor_obfuscate(content)
-    size_b = output.encode('utf-8')
-    size_kb = len(size_b) / 1024
-    file = None
-    desc = f"{ctx.author.mention}\n**Obfuscation:** XOR with random key\n**Size:** `{round(size_kb,2)} KB`"
-    if size_kb > 10 or len(output) > 1800:
-        file = File(io.BytesIO(size_b), filename="obfuscated.lua")
-        desc += f"\n📦 Full code sent as file"
-        emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
-    else:
-        preview = output[:1500] + ("\n... [truncated]" if len(output) > 1500 else "")
-        desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
-        emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
-    emb.set_footer(text=f"Requested by {ctx.author}")
-    await proc.delete()
-    if file:
-        await ctx.reply(embed=emb, file=file, mention_author=True)
-    else:
-        await ctx.reply(embed=emb, mention_author=True)
-    if logs_col:
-        logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    try:
+        output = xor_obfuscate(content)
+        size_b = output.encode('utf-8')
+        size_kb = len(size_b) / 1024
+        file = None
+        desc = f"{ctx.author.mention}\n**Obfuscation:** XOR with random key\n**Size:** `{round(size_kb,2)} KB`"
+        if size_kb > 10 or len(output) > 1800:
+            file = File(io.BytesIO(size_b), filename="obfuscated.lua")
+            desc += f"\n📦 Full code sent as file"
+            emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
+        else:
+            preview = output[:1500] + ("\n... [truncated]" if len(output) > 1500 else "")
+            desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
+            emb = discord.Embed(title="🔐 XOR Obfuscated Code", color=0x9b59b6, description=desc)
+        emb.set_footer(text=f"Requested by {ctx.author}")
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 if __name__ == "__main__":
     from threading import Thread
