@@ -61,7 +61,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# ---------- DM block ----------
 @bot.check
 async def block_dms(ctx):
     if ctx.guild is None:
@@ -78,7 +77,6 @@ async def block_dms(ctx):
         return False
     return True
 
-# ---------- All utilities (unchanged) ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
@@ -168,7 +166,7 @@ async def extract_code(ctx):
 
 def deobfuscate_code(source_text):
     max_depth = 6
-    report = {"detected": [], "steps": [], "anti": []}
+    report = {"detected": [], "steps": [], "anti": [], "snippets": []}
 
     def clean_escapes(txt):
         txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
@@ -229,8 +227,20 @@ def deobfuscate_code(source_text):
         ]
         for name, pat in sigs:
             if re.search(pat, txt, re.I):
-                if name not in report["detected"]: report["detected"].append(name)
-                if "Anti" in name: report["anti"].append(name)
+                if name not in report["detected"]:
+                    report["detected"].append(name)
+                if "Anti" in name:
+                    report["anti"].append(name)
+                lines = txt.split('\n')
+                for i, line in enumerate(lines):
+                    if re.search(pat, line, re.I):
+                        snippet_start = max(0, i-1)
+                        snippet_end = min(len(lines), i+2)
+                        snippet = '\n'.join(lines[snippet_start:snippet_end])
+                        if snippet not in report["snippets"]:
+                            report["snippets"].append(snippet)
+                        if len(report["snippets"]) >= 10:
+                            break
 
     buf = clean_escapes(source_text)
     scan_signatures(buf)
@@ -265,6 +275,7 @@ def deobfuscate_code(source_text):
         "detected": report["detected"],
         "anti_found": report["anti"],
         "steps": report["steps"],
+        "snippets": report["snippets"][:10],
         "status": "Fully unpacked" if depth >= 3 else "Partially unpacked" if depth > 0 else "No unpack needed"
     }
 
@@ -348,6 +359,12 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 **Processing Steps:**
 {steps}
 """
+        snippets = deobf.get("snippets", [])
+        if snippets:
+            desc += "\n**Protection Snippets:**\n```lua\n"
+            for i, snippet in enumerate(snippets[:5]):
+                desc += f"-- Snippet {i+1}:\n{snippet}\n\n"
+            desc += "```"
         content = deobf["result"]
     elif raw:
         desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
@@ -369,7 +386,7 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
         emb = discord.Embed(title=title, color=0x3498db, description=desc)
     else:
         prev = content[:1500] + ("\n... [truncated]" if len(content) > 1500 else "")
-        desc += f"\n📦 Size: `{round(size_kb,2)} KB`\n\n**Preview:**\n```lua\n{prev}\n```"
+        desc += f"\n\n**Deobfuscated Code Preview:**\n```lua\n{prev}\n```"
         emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
@@ -381,7 +398,6 @@ async def on_ready():
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-# ---------- Commands ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
@@ -451,7 +467,8 @@ async def deobf_command(ctx, *, link=None):
             "max_layers": 6,
             "anti_found": [f"• {a}" for a in dec["anti_found"]],
             "status": dec["status"],
-            "result": dec["result"]
+            "result": dec["result"],
+            "snippets": dec["snippets"]
         }
         emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
         await proc.delete()
