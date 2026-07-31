@@ -56,7 +56,6 @@ bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 # ---------- Channel restriction ----------
 def get_allowed_channel():
-    """Return the channel ID allowed for commands, or None if not set."""
     if settings_col is None:
         return None
     doc = settings_col.find_one({"key": "command_channel"})
@@ -78,17 +77,13 @@ def clear_allowed_channel():
 
 @bot.check
 async def global_channel_check(ctx):
-    # Owner bypass
     if ctx.author.id == OWNER_ID:
         return True
-    # In DMs: block everyone except owner
     if ctx.guild is None:
         await ctx.send("⚠️ You are not allowed to use commands in DMs.")
         return False
-    # In servers: check allowed channel
     allowed = get_allowed_channel()
     if allowed is None:
-        # No restriction set – allow all channels
         return True
     if ctx.channel.id == allowed:
         return True
@@ -111,42 +106,14 @@ async def slash_ping(interaction: discord.Interaction):
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="channel", description="Set or view the command channel")
-@app_commands.default_permissions(administrator=True)
-async def channel_command(interaction: discord.Interaction):
-    """Slash command for channel restriction. Use subcommands via options."""
-    # We'll use a simple subcommand pattern with choices.
-    # For simplicity, we'll implement three actions: set, view, clear.
-    # We'll use a modal or a message. Let's use a select menu.
-    # But since we want a clean implementation, we'll create separate commands:
-    # /channel set <channel>
-    # /channel view
-    # /channel clear
-    # Let's create a group
-    pass
-
-# We'll define a command group for channel
-@bot.tree.group(name="channel", description="Manage the command channel")
-async def channel_group(interaction: discord.Interaction):
-    if interaction.command.name == "channel":
-        # If invoked without subcommand, show help
-        await interaction.response.send_message(
-            "Use `/channel set #channel` to restrict commands to a specific channel.\n"
-            "Use `/channel view` to see the current restriction.\n"
-            "Use `/channel clear` to remove the restriction.",
-            ephemeral=True
-        )
-
-@channel_group.command(name="set", description="Set the channel where commands are allowed")
+@bot.tree.command(name="channel_set", description="Set the channel where commands are allowed")
 @app_commands.describe(channel="The channel to allow commands in")
+@app_commands.default_permissions(administrator=True)
 async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need Administrator permissions.", ephemeral=True)
-        return
     set_allowed_channel(channel.id)
     await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
 
-@channel_group.command(name="view", description="View the currently allowed channel")
+@bot.tree.command(name="channel_view", description="View the currently allowed channel")
 async def channel_view(interaction: discord.Interaction):
     allowed = get_allowed_channel()
     if allowed is None:
@@ -158,15 +125,13 @@ async def channel_view(interaction: discord.Interaction):
         else:
             await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
 
-@channel_group.command(name="clear", description="Remove the channel restriction")
+@bot.tree.command(name="channel_clear", description="Remove the channel restriction")
+@app_commands.default_permissions(administrator=True)
 async def channel_clear(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need Administrator permissions.", ephemeral=True)
-        return
     clear_allowed_channel()
     await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
 
-# ---------- Prefix .ping (optional) ----------
+# ---------- Prefix .ping ----------
 @bot.command(name="ping")
 async def prefix_ping(ctx):
     start = time.perf_counter()
@@ -506,7 +471,7 @@ async def on_ready():
         print("✅ Slash commands synced globally")
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_*"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -565,7 +530,6 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
-        # Use asyncio.to_thread for Python 3.9+
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
