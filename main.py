@@ -146,7 +146,7 @@ async def prefix_ping(ctx):
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     await ctx.reply(embed=embed, mention_author=True)
 
-# ---------- Utility functions (unchanged) ----------
+# ---------- Utility functions ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
