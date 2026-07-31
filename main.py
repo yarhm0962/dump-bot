@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask
 app = Flask(__name__)
 @app.route('/')
 def home(): return "✅ RblXLua Service Running"
@@ -168,9 +168,42 @@ async def extract_code(ctx):
     return None
 
 def deobfuscate_code(source_text):
-    max_depth = 6
+    # Determine max_depth based on size
+    size_kb = len(source_text) / 1024
+    max_depth = 4 if size_kb > 500 else 6
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
 
+    # ----- Scan raw source for protector patterns and snippets -----
+    def scan_raw_signatures(txt):
+        sigs = [
+            ("Prometheus", r'--.*Prometheus|levno-710'),
+            ("Lunr", r'--.*Lunr|return\(function\(L,M,I'),
+            ("Luraph", r'--.*Luraph|luraph\.net'),
+            ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
+            ("WeAreDevs", r'wearedevs\.net|WAD_OBF'),
+            ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
+        ]
+        lines = txt.split('\n')
+        for name, pat in sigs:
+            if re.search(pat, txt, re.I):
+                if name not in report["detected"]:
+                    report["detected"].append(name)
+                if "Anti" in name:
+                    report["anti"].append(name)
+                # capture up to 3 surrounding lines for each match
+                for i, line in enumerate(lines):
+                    if re.search(pat, line, re.I):
+                        start = max(0, i-1)
+                        end = min(len(lines), i+2)
+                        snippet = '\n'.join(lines[start:end])
+                        if snippet not in report["snippets"]:
+                            report["snippets"].append(snippet)
+                        if len(report["snippets"]) >= 10:
+                            break
+
+    scan_raw_signatures(source_text)
+
+    # ----- Clean and deobfuscate -----
     def clean_escapes(txt):
         txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
         txt = re.sub(r'\\([0-9]{1,3})', lambda m: chr(int(m.group(1))), txt)
@@ -219,34 +252,7 @@ def deobfuscate_code(source_text):
             except: pass
         return False, ""
 
-    def scan_signatures(txt):
-        sigs = [
-            ("Prometheus", r'--.*Prometheus|levno-710'),
-            ("Lunr", r'--.*Lunr|return\(function\(L,M,I'),
-            ("Luraph", r'--.*Luraph|luraph\.net'),
-            ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
-            ("WeAreDevs", r'wearedevs\.net|WAD_OBF'),
-            ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
-        ]
-        for name, pat in sigs:
-            if re.search(pat, txt, re.I):
-                if name not in report["detected"]:
-                    report["detected"].append(name)
-                if "Anti" in name:
-                    report["anti"].append(name)
-                lines = txt.split('\n')
-                for i, line in enumerate(lines):
-                    if re.search(pat, line, re.I):
-                        snippet_start = max(0, i-1)
-                        snippet_end = min(len(lines), i+2)
-                        snippet = '\n'.join(lines[snippet_start:snippet_end])
-                        if snippet not in report["snippets"]:
-                            report["snippets"].append(snippet)
-                        if len(report["snippets"]) >= 10:
-                            break
-
     buf = clean_escapes(source_text)
-    scan_signatures(buf)
     changed = True
     depth = 0
     while changed and depth < max_depth:
@@ -267,6 +273,7 @@ def deobfuscate_code(source_text):
             buf = res
             changed = True
             report["steps"].append(f"Layer {depth}: XOR decoded")
+        # quick cleanup to reduce size
         buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
         buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
 
@@ -461,18 +468,21 @@ async def deobf_command(ctx, *, link=None):
 
     try:
         loop = asyncio.get_running_loop()
+        # Timeout: 120 seconds for large files
+        timeout = 120 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             loop.run_in_executor(None, deobfuscate_code, content),
-            timeout=60.0
+            timeout=timeout
         )
 
         obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
         confidence = 100 if dec["detected"] else 100
+        max_layers = 4 if len(content) > 500000 else 6
         report = {
             "obfuscator": {"name": obfuscator_name, "confidence": confidence},
             "steps": [f"• {s}" for s in dec["steps"]],
             "layers_reached": dec["layers_done"],
-            "max_layers": 6,
+            "max_layers": max_layers,
             "anti_found": [f"• {a}" for a in dec["anti_found"]],
             "status": dec["status"],
             "result": dec["result"],
@@ -488,7 +498,7 @@ async def deobf_command(ctx, *, link=None):
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over 60 seconds)."), mention_author=True)
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds)."), mention_author=True)
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -599,6 +609,7 @@ async def obfuscate_command(ctx, *, link=None):
 def keep_alive():
     while True:
         try:
+            import requests
             requests.get("http://localhost:10000/ping")
         except:
             pass
