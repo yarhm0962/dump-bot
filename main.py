@@ -378,7 +378,8 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
-    if db: print(f"✅ Database Ready: {db.name}")
+    if db is not None:
+        print(f"✅ Database Ready: {db.name}")
 
 # ---------- Commands ----------
 @bot.group(name="db", invoke_without_command=True)
@@ -392,14 +393,19 @@ async def db_group(ctx):
 @db_group.command(name="status")
 async def db_status(ctx):
     await delete_cmds_only(ctx)
-    emb = discord.Embed(title="Database Status", color=0x2ecc71 if db else 0xe74c3c, description=f"✅ {ctx.author.mention}\nConnected" if db else f"❌ {ctx.author.mention}\nNot available")
+    if db is not None:
+        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nConnected")
+    else:
+        emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot available")
     await ctx.send(embed=emb)
 
 @db_group.command(name="clear")
 @commands.is_owner()
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
-    if settings_col and logs_col: settings_col.delete_many({}); logs_col.delete_many({})
+    if settings_col is not None and logs_col is not None:
+        settings_col.delete_many({})
+        logs_col.delete_many({})
     emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
     await ctx.send(embed=emb)
 
@@ -433,7 +439,7 @@ async def deobf_command(ctx, *, link=None):
         loop = asyncio.get_running_loop()
         dec = await asyncio.wait_for(
             loop.run_in_executor(None, deobfuscate_code, content),
-            timeout=60.0  # increased timeout
+            timeout=60.0
         )
 
         obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
@@ -453,21 +459,16 @@ async def deobf_command(ctx, *, link=None):
             await ctx.reply(embed=emb, file=file, mention_author=True)
         else:
             await ctx.reply(embed=emb, mention_author=True)
-        if logs_col:
+        if logs_col is not None:
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over 60 seconds)."), mention_author=True)
     except Exception as e:
         await proc.delete()
-        # Send the full error to the channel for debugging
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
-# ---------- Other commands (get, env, obf) are identical ----------
-# ... (they remain unchanged, but for completeness I'll include them in the final paste)
-
-# We'll include all commands to avoid missing anything.
 @bot.command(name="get")
 async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
@@ -490,7 +491,8 @@ async def fetch_command(ctx, *, link=None):
         await proc.delete()
         if file: await ctx.reply(embed=emb, file=file, mention_author=True)
         else: await ctx.reply(embed=emb, mention_author=True)
-        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -521,7 +523,8 @@ async def env_command(ctx, *, link=None):
         emb.set_footer(text=f"Requested by {ctx.author}")
         await proc.delete()
         await ctx.reply(embed=emb, file=file, mention_author=True)
-        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -559,7 +562,7 @@ async def obfuscate_command(ctx, *, link=None):
             await ctx.reply(embed=emb, file=file, mention_author=True)
         else:
             await ctx.reply(embed=emb, mention_author=True)
-        if logs_col:
+        if logs_col is not None:
             logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
