@@ -17,12 +17,31 @@ import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import asyncio
-import concurrent.futures
 
 TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    print("❌ TOKEN environment variable is missing. Bot cannot start.")
+    exit(1)
+
 MONGODB_URI = os.getenv("MONGODB_URI")
-GUILD_ID = os.getenv("GUILD_ID")
-PREMIUM_ROLE_ID = os.getenv("PREMIUM_ROLE_ID")
+if not MONGODB_URI:
+    print("❌ MONGODB_URI environment variable is missing. Bot cannot start.")
+    exit(1)
+
+# Optional premium check variables – if invalid, DM block will simply reject all DMs.
+GUILD_ID_STR = os.getenv("GUILD_ID")
+PREMIUM_ROLE_ID_STR = os.getenv("PREMIUM_ROLE_ID")
+GUILD_ID = None
+PREMIUM_ROLE_ID = None
+if GUILD_ID_STR and PREMIUM_ROLE_ID_STR:
+    try:
+        GUILD_ID = int(GUILD_ID_STR)
+        PREMIUM_ROLE_ID = int(PREMIUM_ROLE_ID_STR)
+        print(f"✅ Premium check enabled: GUILD_ID={GUILD_ID}, ROLE_ID={PREMIUM_ROLE_ID}")
+    except ValueError:
+        print("⚠️ GUILD_ID or PREMIUM_ROLE_ID is not a valid integer. Premium DM check disabled.")
+else:
+    print("⚠️ GUILD_ID or PREMIUM_ROLE_ID not set. Premium DM check disabled.")
 
 mongo_client = None
 db = None
@@ -43,24 +62,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# ---------- Global DM block with Premium check ----------
+# ---------- Global DM block with Premium check (now safe) ----------
 @bot.check
 async def block_dms(ctx):
     if ctx.guild is None:
-        try:
-            if GUILD_ID and PREMIUM_ROLE_ID:
-                guild = bot.get_guild(int(GUILD_ID))
+        # Check if premium check is enabled and user has the role
+        if GUILD_ID is not None and PREMIUM_ROLE_ID is not None:
+            try:
+                guild = bot.get_guild(GUILD_ID)
                 if guild:
                     member = guild.get_member(ctx.author.id)
-                    if member and int(PREMIUM_ROLE_ID) in [role.id for role in member.roles]:
+                    if member and PREMIUM_ROLE_ID in [role.id for role in member.roles]:
                         return True
-        except:
-            pass
+            except Exception as e:
+                print(f"⚠️ Premium check error: {e}")
         await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
         return False
     return True
 
-# ---------- Utility functions (unchanged) ----------
+# ---------- All other functions (unchanged) ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
@@ -148,9 +168,8 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- Optimised deobfuscation (now a standalone sync function) ----------
 def deobfuscate_code(source_text):
-    max_depth = 6  # reduced from 12 for speed
+    max_depth = 6
     report = {"detected": [], "steps": [], "anti": []}
 
     def clean_escapes(txt):
@@ -223,24 +242,13 @@ def deobfuscate_code(source_text):
         changed = False
         depth += 1
         ok, res = decode_b64(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: Base64 decoded")
+        if ok: buf = res; changed = True; report["steps"].append(f"Layer {depth}: Base64 decoded")
         ok, res = decode_strchar(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: string.char decoded")
+        if ok: buf = res; changed = True; report["steps"].append(f"Layer {depth}: string.char decoded")
         ok, res = decode_xor(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: XOR decoded")
-        # quick cleanup to reduce size
+        if ok: buf = res; changed = True; report["steps"].append(f"Layer {depth}: XOR decoded")
         buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
         buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
-
     buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
     buf = re.sub(r'--.*$', '', buf, re.MULTILINE).strip()
     return {
@@ -252,7 +260,6 @@ def deobfuscate_code(source_text):
         "status": "Fully unpacked" if depth >= 3 else "Partially unpacked" if depth > 0 else "No unpack needed"
     }
 
-# ---------- Rest of classes (EnvBypassDumper, make_result_embed) unchanged ----------
 class EnvBypassDumper:
     def __init__(self):
         self.spoof = {}
@@ -357,14 +364,13 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ---------- Events ----------
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
     if db: print(f"✅ Database Ready: {db.name}")
 
-# ---------- Commands ----------
+# ---------- Commands (unchanged) ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
@@ -401,54 +407,43 @@ async def show_commands(ctx):
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
-    if not link:
-        content = await extract_code(ctx)
-    else:
-        ok, content, msg = await fetch_content(link)
-        if not ok:
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    if not link: content = await extract_code(ctx)
+    else: ok, content, msg = await fetch_content(link)
+    if link and not ok:
+        return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
     if not content:
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
-
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
-
     try:
-        # Offload the heavy deobfuscation to a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
-        # Use a timeout of 30 seconds to prevent hanging
         dec = await asyncio.wait_for(
             loop.run_in_executor(None, deobfuscate_code, content),
             timeout=30.0
         )
-
         obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
         confidence = 100 if dec["detected"] else 100
         report = {
             "obfuscator": {"name": obfuscator_name, "confidence": confidence},
             "steps": [f"• {s}" for s in dec["steps"]],
             "layers_reached": dec["layers_done"],
-            "max_layers": 6,  # updated to reflect the new limit
+            "max_layers": 6,
             "anti_found": [f"• {a}" for a in dec["anti_found"]],
             "status": dec["status"],
             "result": dec["result"]
         }
         emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
         await proc.delete()
-        if file:
-            await ctx.reply(embed=emb, file=file, mention_author=True)
-        else:
-            await ctx.reply(embed=emb, mention_author=True)
-        if logs_col:
-            logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+        if file: await ctx.reply(embed=emb, file=file, mention_author=True)
+        else: await ctx.reply(embed=emb, mention_author=True)
+        if logs_col: logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over 30 seconds). The script may be too large or heavily obfuscated."), mention_author=True)
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over 30 seconds)."), mention_author=True)
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
-# ---------- Other commands (get, env, obf) remain unchanged ----------
 @bot.command(name="get")
 async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
@@ -546,7 +541,6 @@ async def obfuscate_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
-# ---------- Run ----------
 if __name__ == "__main__":
     from threading import Thread
     def run_flask(): app.run(host="0.0.0.0", port=10000)
