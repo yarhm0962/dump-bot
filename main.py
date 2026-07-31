@@ -1,7 +1,9 @@
-from flask import Flask
+from flask import Flask, request
 app = Flask(__name__)
 @app.route('/')
 def home(): return "✅ RblXLua Service Running"
+@app.route('/ping')
+def ping(): return "pong"
 
 import os
 import discord
@@ -17,6 +19,8 @@ import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import asyncio
+import threading
+import time
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -28,19 +32,16 @@ if not MONGODB_URI:
     print("❌ MONGODB_URI missing")
     exit(1)
 
-GUILD_ID_STR = os.getenv("GUILD_ID")
-PREMIUM_ROLE_ID_STR = os.getenv("PREMIUM_ROLE_ID")
 GUILD_ID = None
 PREMIUM_ROLE_ID = None
+GUILD_ID_STR = os.getenv("GUILD_ID")
+PREMIUM_ROLE_ID_STR = os.getenv("PREMIUM_ROLE_ID")
 if GUILD_ID_STR and PREMIUM_ROLE_ID_STR:
     try:
         GUILD_ID = int(GUILD_ID_STR)
         PREMIUM_ROLE_ID = int(PREMIUM_ROLE_ID_STR)
-        print(f"✅ Premium check enabled: GUILD_ID={GUILD_ID}, ROLE_ID={PREMIUM_ROLE_ID}")
     except ValueError:
-        print("⚠️ GUILD_ID or PREMIUM_ROLE_ID invalid - premium DM check disabled")
-else:
-    print("⚠️ GUILD_ID or PREMIUM_ROLE_ID not set - premium DM check disabled")
+        pass
 
 mongo_client = None
 db = None
@@ -61,21 +62,23 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-@bot.check
-async def block_dms(ctx):
-    if ctx.guild is None:
-        if GUILD_ID is not None and PREMIUM_ROLE_ID is not None:
-            try:
-                guild = bot.get_guild(GUILD_ID)
-                if guild:
-                    member = guild.get_member(ctx.author.id)
-                    if member and PREMIUM_ROLE_ID in [r.id for r in member.roles]:
-                        return True
-            except Exception as e:
-                print(f"⚠️ Premium check error: {e}")
+def check_dm_premium():
+    async def predicate(ctx):
+        if ctx.guild is not None:
+            return True
+        if GUILD_ID is None or PREMIUM_ROLE_ID is None:
+            await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
+            return False
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            await ctx.send("⚠️ Premium check failed – contact staff.")
+            return False
+        member = guild.get_member(ctx.author.id)
+        if member and PREMIUM_ROLE_ID in [r.id for r in member.roles]:
+            return True
         await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
         return False
-    return True
+    return commands.check(predicate)
 
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
@@ -399,6 +402,7 @@ async def on_ready():
         print(f"✅ Database Ready: {db.name}")
 
 @bot.group(name="db", invoke_without_command=True)
+@check_dm_premium()
 async def db_group(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
@@ -407,6 +411,7 @@ async def db_group(ctx):
     await ctx.send(embed=emb)
 
 @db_group.command(name="status")
+@check_dm_premium()
 async def db_status(ctx):
     await delete_cmds_only(ctx)
     if db is not None:
@@ -417,6 +422,7 @@ async def db_status(ctx):
 
 @db_group.command(name="clear")
 @commands.is_owner()
+@check_dm_premium()
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
     if settings_col is not None and logs_col is not None:
@@ -426,6 +432,7 @@ async def db_clear(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="cmds")
+@check_dm_premium()
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
@@ -437,6 +444,7 @@ async def show_commands(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="l")
+@check_dm_premium()
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link:
@@ -487,6 +495,7 @@ async def deobf_command(ctx, *, link=None):
         print(f"Deobf error: {e}")
 
 @bot.command(name="get")
+@check_dm_premium()
 async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link and ctx.message.reference:
@@ -515,6 +524,7 @@ async def fetch_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="env")
+@check_dm_premium()
 async def env_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link: content = await extract_code(ctx)
@@ -547,6 +557,7 @@ async def env_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="obf")
+@check_dm_premium()
 async def obfuscate_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if link:
@@ -585,8 +596,17 @@ async def obfuscate_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
+def keep_alive():
+    while True:
+        try:
+            requests.get("http://localhost:10000/ping")
+        except:
+            pass
+        time.sleep(300)
+
 if __name__ == "__main__":
     from threading import Thread
     def run_flask(): app.run(host="0.0.0.0", port=10000)
     Thread(target=run_flask, daemon=True).start()
+    Thread(target=keep_alive, daemon=True).start()
     bot.run(TOKEN)
