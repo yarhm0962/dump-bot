@@ -7,7 +7,7 @@ def ping(): return "pong"
 
 import os
 import discord
-from discord import File
+from discord import File, app_commands
 from discord.ext import commands
 import aiohttp
 import re
@@ -54,25 +54,56 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# --- DM block: only owner can use commands in DMs ---
+# ---------- Channel restriction ----------
+def get_allowed_channel():
+    """Return the channel ID allowed for commands, or None if not set."""
+    if settings_col is None:
+        return None
+    doc = settings_col.find_one({"key": "command_channel"})
+    if doc:
+        return doc.get("value")
+    return None
+
+def set_allowed_channel(channel_id):
+    if settings_col is not None:
+        settings_col.update_one(
+            {"key": "command_channel"},
+            {"$set": {"value": channel_id}},
+            upsert=True
+        )
+
+def clear_allowed_channel():
+    if settings_col is not None:
+        settings_col.delete_one({"key": "command_channel"})
+
 @bot.check
-async def global_dm_check(ctx):
-    if ctx.guild is not None:
-        return True
+async def global_channel_check(ctx):
+    # Owner bypass
     if ctx.author.id == OWNER_ID:
         return True
-    await ctx.send("⚠️ You are not allowed to use commands in DMs.")
+    # In DMs: block everyone except owner
+    if ctx.guild is None:
+        await ctx.send("⚠️ You are not allowed to use commands in DMs.")
+        return False
+    # In servers: check allowed channel
+    allowed = get_allowed_channel()
+    if allowed is None:
+        # No restriction set – allow all channels
+        return True
+    if ctx.channel.id == allowed:
+        return True
+    await ctx.send(f"⚠️ Commands are restricted to <#{allowed}>. Please use them there.")
     return False
 
-# --- Slash command /ping ---
-@bot.tree.command(name="ping", description="Check bot latency and response time")
+# ---------- Slash commands ----------
+@bot.tree.command(name="ping", description="Check bot latency")
 async def slash_ping(interaction: discord.Interaction):
     start = time.perf_counter()
     api_latency = round(bot.latency * 1000)
     embed = discord.Embed(
         title="🏓 Pong!",
         color=0x2c3e99,
-        description=f"**API Latency:** `{api_latency} ms`\n**Gateway Ping:** `{round(bot.latency * 1000)} ms`"
+        description=f"**API Latency:** `{api_latency} ms`"
     )
     end = time.perf_counter()
     response_time = round((end - start) * 1000)
@@ -80,7 +111,62 @@ async def slash_ping(interaction: discord.Interaction):
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# --- Prefix .ping (optional) ---
+@bot.tree.command(name="channel", description="Set or view the command channel")
+@app_commands.default_permissions(administrator=True)
+async def channel_command(interaction: discord.Interaction):
+    """Slash command for channel restriction. Use subcommands via options."""
+    # We'll use a simple subcommand pattern with choices.
+    # For simplicity, we'll implement three actions: set, view, clear.
+    # We'll use a modal or a message. Let's use a select menu.
+    # But since we want a clean implementation, we'll create separate commands:
+    # /channel set <channel>
+    # /channel view
+    # /channel clear
+    # Let's create a group
+    pass
+
+# We'll define a command group for channel
+@bot.tree.group(name="channel", description="Manage the command channel")
+async def channel_group(interaction: discord.Interaction):
+    if interaction.command.name == "channel":
+        # If invoked without subcommand, show help
+        await interaction.response.send_message(
+            "Use `/channel set #channel` to restrict commands to a specific channel.\n"
+            "Use `/channel view` to see the current restriction.\n"
+            "Use `/channel clear` to remove the restriction.",
+            ephemeral=True
+        )
+
+@channel_group.command(name="set", description="Set the channel where commands are allowed")
+@app_commands.describe(channel="The channel to allow commands in")
+async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions.", ephemeral=True)
+        return
+    set_allowed_channel(channel.id)
+    await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
+
+@channel_group.command(name="view", description="View the currently allowed channel")
+async def channel_view(interaction: discord.Interaction):
+    allowed = get_allowed_channel()
+    if allowed is None:
+        await interaction.response.send_message("ℹ️ No channel restriction is set. Commands are allowed everywhere.", ephemeral=True)
+    else:
+        channel = bot.get_channel(allowed)
+        if channel:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to {channel.mention}.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
+
+@channel_group.command(name="clear", description="Remove the channel restriction")
+async def channel_clear(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions.", ephemeral=True)
+        return
+    clear_allowed_channel()
+    await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
+
+# ---------- Prefix .ping (optional) ----------
 @bot.command(name="ping")
 async def prefix_ping(ctx):
     start = time.perf_counter()
@@ -93,7 +179,7 @@ async def prefix_ping(ctx):
     end = time.perf_counter()
     response_time = round((end - start) * 1000)
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
-    await ctx.send(embed=embed)
+    await ctx.reply(embed=embed, mention_author=True)
 
 # ---------- Utility functions (unchanged) ----------
 async def delete_cmds_only(ctx):
@@ -420,11 +506,11 @@ async def on_ready():
         print("✅ Slash commands synced globally")
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-# ---------- Commands ----------
+# ---------- Prefix Commands ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
@@ -479,10 +565,10 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
-        loop = asyncio.get_running_loop()
+        # Use asyncio.to_thread for Python 3.9+
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
-            loop.run_in_executor(None, deobfuscate_code, content),
+            asyncio.to_thread(deobfuscate_code, content),
             timeout=timeout
         )
 
@@ -509,7 +595,7 @@ async def deobf_command(ctx, *, link=None):
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds). Try a smaller file."), mention_author=True)
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds). Try a smaller file or use `.get` to fetch raw."), mention_author=True)
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
