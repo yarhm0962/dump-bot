@@ -21,6 +21,7 @@ from pymongo.server_api import ServerApi
 import asyncio
 import threading
 import time
+from datetime import datetime
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -32,16 +33,7 @@ if not MONGODB_URI:
     print("❌ MONGODB_URI missing")
     exit(1)
 
-GUILD_ID = None
-PREMIUM_ROLE_ID = None
-GUILD_ID_STR = os.getenv("GUILD_ID")
-PREMIUM_ROLE_ID_STR = os.getenv("PREMIUM_ROLE_ID")
-if GUILD_ID_STR and PREMIUM_ROLE_ID_STR:
-    try:
-        GUILD_ID = int(GUILD_ID_STR)
-        PREMIUM_ROLE_ID = int(PREMIUM_ROLE_ID_STR)
-    except ValueError:
-        pass
+OWNER_ID = 1445289457866506290
 
 mongo_client = None
 db = None
@@ -62,23 +54,50 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-def check_dm_premium():
-    async def predicate(ctx):
-        if ctx.guild is not None:
-            return True
-        if GUILD_ID is None or PREMIUM_ROLE_ID is None:
-            await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
-            return False
-        guild = bot.get_guild(GUILD_ID)
-        if not guild:
-            await ctx.send("⚠️ Premium check failed – contact staff.")
-            return False
-        member = guild.get_member(ctx.author.id)
-        if member and PREMIUM_ROLE_ID in [r.id for r in member.roles]:
-            return True
-        await ctx.send("⚠️ Please upgrade to premium to access private CMDS")
-        return False
-    return commands.check(predicate)
+# --- DM block: only owner can use commands in DMs ---
+@bot.check
+async def global_dm_check(ctx):
+    if ctx.guild is not None:
+        return True
+    if ctx.author.id == OWNER_ID:
+        return True
+    await ctx.send("⚠️ You are not allowed to use commands in DMs.")
+    return False
+
+# --- Slash command /ping ---
+@bot.tree.command(name="ping", description="Check bot latency and response time")
+async def slash_ping(interaction: discord.Interaction):
+    start = time.perf_counter()
+    api_latency = round(bot.latency * 1000)  # ms
+    embed = discord.Embed(
+        title="🏓 Pong!",
+        color=0x2c3e99,
+        description=f"**API Latency:** `{api_latency} ms`\n**Gateway Ping:** `{round(bot.latency * 1000)} ms`"
+    )
+    # Compute response time
+    end = time.perf_counter()
+    response_time = round((end - start) * 1000)
+    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
+    embed.set_footer(text=f"Requested by {interaction.user}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- Prefix command .ping (optional, but we keep it) ---
+@bot.command(name="ping")
+async def prefix_ping(ctx):
+    start = time.perf_counter()
+    api_latency = round(bot.latency * 1000)
+    embed = discord.Embed(
+        title="🏓 Pong!",
+        color=0x2c3e99,
+        description=f"**API Latency:** `{api_latency} ms`"
+    )
+    end = time.perf_counter()
+    response_time = round((end - start) * 1000)
+    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
+    await ctx.send(embed=embed)
+
+# ---------- All other code (deobf, fetch, env, obf, db, cmds) ----------
+# (unchanged – paste from previous version)
 
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
@@ -168,12 +187,10 @@ async def extract_code(ctx):
     return None
 
 def deobfuscate_code(source_text):
-    # Determine max_depth based on size
     size_kb = len(source_text) / 1024
     max_depth = 4 if size_kb > 500 else 6
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
 
-    # ----- Scan raw source for protector patterns and snippets -----
     def scan_raw_signatures(txt):
         sigs = [
             ("Prometheus", r'--.*Prometheus|levno-710'),
@@ -190,7 +207,6 @@ def deobfuscate_code(source_text):
                     report["detected"].append(name)
                 if "Anti" in name:
                     report["anti"].append(name)
-                # capture up to 3 surrounding lines for each match
                 for i, line in enumerate(lines):
                     if re.search(pat, line, re.I):
                         start = max(0, i-1)
@@ -203,7 +219,6 @@ def deobfuscate_code(source_text):
 
     scan_raw_signatures(source_text)
 
-    # ----- Clean and deobfuscate -----
     def clean_escapes(txt):
         txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
         txt = re.sub(r'\\([0-9]{1,3})', lambda m: chr(int(m.group(1))), txt)
@@ -273,7 +288,6 @@ def deobfuscate_code(source_text):
             buf = res
             changed = True
             report["steps"].append(f"Layer {depth}: XOR decoded")
-        # quick cleanup to reduce size
         buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
         buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
 
@@ -404,12 +418,18 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | RblXLua Tools"))
+    # Sync slash commands globally
+    try:
+        await bot.tree.sync()
+        print("✅ Slash commands synced globally")
+    except Exception as e:
+        print(f"⚠️ Failed to sync slash commands: {e}")
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
+# ---------- Prefix Commands (unchanged) ----------
 @bot.group(name="db", invoke_without_command=True)
-@check_dm_premium()
 async def db_group(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
@@ -418,7 +438,6 @@ async def db_group(ctx):
     await ctx.send(embed=emb)
 
 @db_group.command(name="status")
-@check_dm_premium()
 async def db_status(ctx):
     await delete_cmds_only(ctx)
     if db is not None:
@@ -429,7 +448,6 @@ async def db_status(ctx):
 
 @db_group.command(name="clear")
 @commands.is_owner()
-@check_dm_premium()
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
     if settings_col is not None and logs_col is not None:
@@ -439,7 +457,6 @@ async def db_clear(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="cmds")
-@check_dm_premium()
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
@@ -451,7 +468,6 @@ async def show_commands(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="l")
-@check_dm_premium()
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link:
@@ -468,7 +484,6 @@ async def deobf_command(ctx, *, link=None):
 
     try:
         loop = asyncio.get_running_loop()
-        # Timeout: 120 seconds for large files
         timeout = 120 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             loop.run_in_executor(None, deobfuscate_code, content),
@@ -505,7 +520,6 @@ async def deobf_command(ctx, *, link=None):
         print(f"Deobf error: {e}")
 
 @bot.command(name="get")
-@check_dm_premium()
 async def fetch_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link and ctx.message.reference:
@@ -534,7 +548,6 @@ async def fetch_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="env")
-@check_dm_premium()
 async def env_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if not link: content = await extract_code(ctx)
@@ -567,7 +580,6 @@ async def env_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.command(name="obf")
-@check_dm_premium()
 async def obfuscate_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
     if link:
