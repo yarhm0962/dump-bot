@@ -68,20 +68,19 @@ async def global_dm_check(ctx):
 @bot.tree.command(name="ping", description="Check bot latency and response time")
 async def slash_ping(interaction: discord.Interaction):
     start = time.perf_counter()
-    api_latency = round(bot.latency * 1000)  # ms
+    api_latency = round(bot.latency * 1000)
     embed = discord.Embed(
         title="🏓 Pong!",
         color=0x2c3e99,
         description=f"**API Latency:** `{api_latency} ms`\n**Gateway Ping:** `{round(bot.latency * 1000)} ms`"
     )
-    # Compute response time
     end = time.perf_counter()
     response_time = round((end - start) * 1000)
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# --- Prefix command .ping (optional, but we keep it) ---
+# --- Prefix .ping (optional) ---
 @bot.command(name="ping")
 async def prefix_ping(ctx):
     start = time.perf_counter()
@@ -96,9 +95,7 @@ async def prefix_ping(ctx):
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     await ctx.send(embed=embed)
 
-# ---------- All other code (deobf, fetch, env, obf, db, cmds) ----------
-# (unchanged – paste from previous version)
-
+# ---------- Utility functions (unchanged) ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
@@ -418,7 +415,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
-    # Sync slash commands globally
     try:
         await bot.tree.sync()
         print("✅ Slash commands synced globally")
@@ -428,14 +424,14 @@ async def on_ready():
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-# ---------- Prefix Commands (unchanged) ----------
+# ---------- Commands ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
     emb.add_field(name="`db status`", value="Check database connection", inline=False)
     emb.add_field(name="`db clear`", value="Clear stored data", inline=False)
-    await ctx.send(embed=emb)
+    await ctx.reply(embed=emb, mention_author=True)
 
 @db_group.command(name="status")
 async def db_status(ctx):
@@ -444,7 +440,7 @@ async def db_status(ctx):
         emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nConnected")
     else:
         emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot available")
-    await ctx.send(embed=emb)
+    await ctx.reply(embed=emb, mention_author=True)
 
 @db_group.command(name="clear")
 @commands.is_owner()
@@ -454,7 +450,7 @@ async def db_clear(ctx):
         settings_col.delete_many({})
         logs_col.delete_many({})
     emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
-    await ctx.send(embed=emb)
+    await ctx.reply(embed=emb, mention_author=True)
 
 @bot.command(name="cmds")
 async def show_commands(ctx):
@@ -465,7 +461,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.env <link/loadstring>`", value="Deep env/anti-env scan + unpack", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="XOR obfuscate Lua code", inline=False)
     emb.set_footer(text="Now fully supports XOR patterns + Fualmor style protection")
-    await ctx.send(embed=emb)
+    await ctx.reply(embed=emb, mention_author=True)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
@@ -484,7 +480,7 @@ async def deobf_command(ctx, *, link=None):
 
     try:
         loop = asyncio.get_running_loop()
-        timeout = 120 if len(content) > 500000 else 60
+        timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             loop.run_in_executor(None, deobfuscate_code, content),
             timeout=timeout
@@ -513,7 +509,7 @@ async def deobf_command(ctx, *, link=None):
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds)."), mention_author=True)
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds). Try a smaller file."), mention_author=True)
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
