@@ -467,8 +467,65 @@ def deobfuscate_code(source_text):
 
 class EnvBypassDumper:
     def __init__(self):
-        self.spoof = {}
-        self.block = [
+        self.removed_snippets = []
+
+    def remove_anti_env_checks(self, src):
+        patterns_remove = [
+            (r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end', '--[[G check removed]]'),
+            (r'if\s*_?ENV\s*[=!]=?\s*nil\s*then.*?end', '--[[ENV check removed]]'),
+            (r'if\s*getgenv\s*[=!]=?\s*nil\s*then.*?end', '--[[getgenv check removed]]'),
+            (r'if\s*type\s*\(\s*getgenv\s*\)\s*~=\s*["\']function["\'].*?end', '--[[type check removed]]'),
+            (r'_?\._?LOADED\s*[=!]=?\s*true.*?return', '--[[LOADED check removed]]'),
+            (r'_?\._?ENVLOG.*?Kick\(.*?\)', '--[[ENVLOG kick removed]]'),
+            (r'_?\._?GALACTIC.*?Kick\(.*?\)', '--[[GALACTIC kick removed]]'),
+            (r'_?\._?LOGGER.*?Kick\(.*?\)', '--[[LOGGER kick removed]]'),
+            (r'_?\._?UNOBF.*?Kick\(.*?\)', '--[[UNOBF kick removed]]'),
+            (r'_?\._?INTERCEPT.*?Kick\(.*?\)', '--[[INTERCEPT kick removed]]'),
+            (r'if\s*debug\s*~=\s*nil.*?then.*?error.*?end', '--[[debug error removed]]'),
+            (r'for\s+_+,\s+v\s+in\s+pairs\s*\(\s*debug\s*\)\s+do.*?end', '--[[debug pairs removed]]'),
+            (r'if\s*type\s*\(\s*rawget\s*\)\s*~=', '--[[rawget type check removed]]'),
+            (r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring', '--[[loadstring check removed]]'),
+            (r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil', '--[[_p/_j check removed]]'),
+            # Additional patterns for the given protector
+            (r'local\s+_v_logDetect\s*=\s*function\(\)\s*_v_p\(_v_err,\s*"logging detected"\);\s*while\s+true\s+do\s+end;\s*end;', '--[[logDetect removed]]'),
+            (r'_v_logDetect\(\)', '--[[logDetect call removed]]'),
+            (r'if\s+not\s+_c_v\(_v_t\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_t check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_p\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_p check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_xp\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_xp check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_sm\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_sm check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_req\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_req check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_r\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_r check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_rs\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_rs check removed]]'),
+            (r'_v_tamperCheck\(\)', '--[[tamperCheck removed]]'),
+            (r'_proxy_active\s*=\s*true;?', '--[[proxy activation removed]]'),
+            (r'local\s+_s_set,\s*_setfenv\s*=\s*_v_p\(function\(\)\s*return\s*_v_g\["setfenv"\]\s*end\);?.*?end;?', '--[[setfenv spoof removed]]'),
+            (r'return\s+_self_ref;?', 'return _self_ref; --[[spoofed]]'),
+        ]
+        out = src
+        for pat, repl in patterns_remove:
+            # Capture snippets before removal
+            matches = list(re.finditer(pat, out, re.DOTALL | re.IGNORECASE))
+            for m in matches:
+                snippet = out[m.start():m.end()]
+                if snippet not in self.removed_snippets:
+                    self.removed_snippets.append(snippet)
+            out = re.sub(pat, repl, out, flags=re.DOTALL | re.IGNORECASE)
+        return out
+
+    def patch_function_checks(self, src):
+        repl = [
+            (r'local\s+_l\s*=\s*loadstring.*?local\s+_l\s*=\s*loadstring', 'local _l = loadstring or load'),
+            (r'local\s+_g\s*=\s*game\.HttpGet', 'local _g = function() return "" end'),
+            (r'if\s+_l\s*~=\s*loadstring.*?then\s*__:Kick.*?end', '--[[loadstring kick removed]]'),
+            (r'if\s+_g\s*~=\s*game\.HttpGet.*?then\s*__:Kick.*?end', '--[[HttpGet kick removed]]')
+        ]
+        out = src
+        for old, new in repl:
+            out = re.sub(old, new, out, flags=re.DOTALL)
+        return out
+
+    def inject_dummy_returns(self, src):
+        block = [
             "writefile", "readfile", "listfiles", "makefolder",
             "delfile", "getfenv", "setfenv", "getgenv",
             "debug.getupvalue", "debug.setupvalue", "debug.getlocal",
@@ -476,60 +533,43 @@ class EnvBypassDumper:
             "rawset", "rawget", "rawequal", "newcclosure",
             "loadstring", "load", "require"
         ]
-
-    def remove_anti_env_checks(self, src):
-        patterns_remove = [
-            r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end',
-            r'if\s*_?ENV\s*[=!]=?\s*nil\s*then.*?end',
-            r'if\s*getgenv\s*[=!]=?\s*nil\s*then.*?end',
-            r'if\s*type\s*\(\s*getgenv\s*\)\s*~=\s*["\']function["\'].*?end',
-            r'_?\._?LOADED\s*[=!]=?\s*true.*?return',
-            r'_?\._?ENVLOG.*?Kick\(.*?\)',
-            r'_?\._?GALACTIC.*?Kick\(.*?\)',
-            r'_?\._?LOGGER.*?Kick\(.*?\)',
-            r'_?\._?UNOBF.*?Kick\(.*?\)',
-            r'_?\._?INTERCEPT.*?Kick\(.*?\)',
-            r'if\s*debug\s*~=\s*nil.*?then.*?error.*?end',
-            r'for\s+_+,\s+v\s+in\s+pairs\s*\(\s*debug\s*\)\s+do.*?end',
-            r'if\s*type\s*\(\s*rawget\s*\)\s*~=',
-            r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring',
-            r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil'
-        ]
-        for p in patterns_remove:
-            src = re.sub(p, '', src, flags=re.DOTALL | re.IGNORECASE)
-        return src
-
-    def patch_function_checks(self, src):
-        repl = [
-            (r'local\s+_l\s*=\s*loadstring.*?local\s+_l\s*=\s*loadstring', 'local _l = loadstring or load'),
-            (r'local\s+_g\s*=\s*game\.HttpGet', 'local _g = function() return "" end'),
-            (r'if\s+_l\s*~=\s*loadstring.*?then\s*__:Kick.*?end', ''),
-            (r'if\s+_g\s*~=\s*game\.HttpGet.*?then\s*__:Kick.*?end', '')
-        ]
-        for old,new in repl: src = re.sub(old, new, src, flags=re.DOTALL)
-        return src
-
-    def inject_dummy_returns(self, src):
-        for name in self.block:
-            src = re.sub(
+        out = src
+        for name in block:
+            out = re.sub(
                 rf'if\s+type\s*\(\s*{name}\s*\)\s*[=!]=?\s*["\']?nil["\']?\s+then.*?(Kick|error|return).*?end',
-                f'local {name} = nil',
-                src, flags=re.DOTALL
+                f'--[[{name} check removed]]',
+                out, flags=re.DOTALL
             )
-        return src
+        return out
 
     def full_bypass(self, code):
         out = code
+        self.removed_snippets = []
         out = self.remove_anti_env_checks(out)
         out = self.patch_function_checks(out)
         out = self.inject_dummy_returns(out)
+        # Also neutralize the _v_logDetect function itself if still present
+        out = re.sub(r'local\s+function\s+_v_logDetect\(\)[^;]*;', '--[[logDetect removed]]', out, flags=re.DOTALL)
         return {
             "patched_code": out.strip(),
-            "bypassed_count": len(re.findall(r'Kick|error|return', code)) - len(re.findall(r'Kick|error|return', out))
+            "bypassed_count": len(self.removed_snippets)
         }
 
-def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
-    if deobf:
+def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypass: dict=None):
+    if env_bypass:
+        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{env_bypass['bypassed_count']}`\n**Size:** `{round(len(env_bypass['patched_code'].encode('utf-8'))/1024, 2)} KB`\n\n**Protection Snippets:**\n```lua\n"
+        snippets = env_bypass.get("snippets", [])
+        if snippets:
+            snippet_text = ""
+            for i, snippet in enumerate(snippets[:3]):
+                snippet_text += f"-- Removed {i+1}:\n{snippet}\n\n"
+            if len(snippet_text) > 500:
+                snippet_text = snippet_text[:500] + "\n... [truncated]"
+            desc += snippet_text + "```"
+        else:
+            desc += "No specific protection snippets found.\n```"
+        content = env_bypass["patched_code"]
+    elif deobf:
         obf = deobf["obfuscator"]
         steps = "\n".join([f"• {s}" for s in deobf["steps"]]) if deobf["steps"] else "• No unpack steps"
         anti = "\n".join(deobf["anti_found"]) if deobf["anti_found"] else "• None detected"
@@ -546,29 +586,15 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 {steps}
 """
         snippets = deobf.get("snippets", [])
+        if snippets:
+            desc += "\n**Protection Snippets:**\n```lua\n"
+            snippet_text = ""
+            for i, snippet in enumerate(snippets[:3]):
+                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
+            if len(snippet_text) > 500:
+                snippet_text = snippet_text[:500] + "\n... [truncated]"
+            desc += snippet_text + "```"
         content = deobf["result"]
-
-        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
-            preview_len = int(len(content) * 0.3)
-            preview_len = min(preview_len, 500)
-            if preview_len < 50:
-                preview_len = min(150, len(content))
-            preview = content[:preview_len]
-            if len(content) > preview_len:
-                preview += "... [truncated]"
-            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
-        else:
-            if snippets:
-                desc += "\n**Protection Snippets (raw obfuscator code):**\n```lua\n"
-                snippet_text = ""
-                for i, snippet in enumerate(snippets[:3]):
-                    snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
-                if len(snippet_text) > 500:
-                    snippet_text = snippet_text[:500] + "\n... [truncated]"
-                desc += snippet_text + "```"
-            else:
-                desc += "\n⚠️ No obfuscator snippets found."
-
     elif raw:
         desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
         content = decode_all_escapes(raw)
@@ -583,6 +609,30 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     size_b = content.encode('utf-8')
     size_kb = len(size_b) / 1024
     file = None
+    if env_bypass:
+        preview_len = int(len(content) * 0.3)
+        preview_len = min(preview_len, 500)
+        if preview_len < 50:
+            preview_len = min(150, len(content))
+        preview = content[:preview_len]
+        if len(content) > preview_len:
+            preview += "... [truncated]"
+        desc += f"\n\n**Patched Code Preview (30%):**\n```lua\n{preview}\n```"
+    elif deobf:
+        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
+            preview_len = int(len(content) * 0.3)
+            preview_len = min(preview_len, 500)
+            if preview_len < 50:
+                preview_len = min(150, len(content))
+            preview = content[:preview_len]
+            if len(content) > preview_len:
+                preview += "... [truncated]"
+            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
+    elif raw:
+        preview = content[:500] + ("..." if len(content) > 500 else "")
+        desc += f"\n\n**Raw Code Preview:**\n```lua\n{preview}\n```"
+
+    # Always add file if content large
     if size_kb > 10 or len(content) > 1800:
         file = File(io.BytesIO(size_b), filename="processed.lua")
         if len(desc) > 5000:
@@ -591,8 +641,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
             desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
         emb = discord.Embed(title=title, color=0x3498db, description=desc)
     else:
-        preview = content[:1500] + ("..." if len(content) > 1500 else "")
-        desc += f"\n\n**Full Deobfuscated Code:**\n```lua\n{preview}\n```"
         emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
@@ -825,34 +873,45 @@ async def fetch_command(ctx, *, link=None):
 @bot.command(name="env")
 async def env_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
-    if not link: content = await extract_code(ctx)
-    else: ok, content, msg = await fetch_content(link)
-    if link and not ok:
-        return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    if not link:
+        content = await extract_code(ctx)
+    else:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
     if not content:
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
+
     proc = await ctx.reply(f"🛡️ Bypassing anti-env checks {ctx.author.mention}...", mention_author=True)
     try:
         dumper = EnvBypassDumper()
         bypass_result = dumper.full_bypass(content)
         patched_code = bypass_result["patched_code"]
         bypassed = bypass_result["bypassed_count"]
+        snippets = dumper.removed_snippets[:10]  # store for preview
+
         if not patched_code:
             patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
-        size_b = patched_code.encode('utf-8')
-        size_kb = len(size_b) / 1024
-        file = File(io.BytesIO(size_b), filename="patched.lua")
-        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{bypassed}`\n**Size:** `{round(size_kb,2)} KB`\n📦 Patched script attached below."
-        emb = discord.Embed(title="🛡️ Anti-env Bypass Complete", color=0x2ecc71, description=desc)
-        emb.set_footer(text=f"Requested by {ctx.author}")
+
+        # Build embed with preview
+        env_report = {
+            "patched_code": patched_code,
+            "bypassed_count": bypassed,
+            "snippets": snippets
+        }
+        emb, file = make_result_embed(ctx, "🛡️ Anti-env Bypass Complete", env_bypass=env_report)
         await proc.delete()
-        await ctx.reply(embed=emb, file=file, mention_author=True)
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
             logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+        print(f"Env error: {e}")
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
