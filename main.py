@@ -21,8 +21,6 @@ from pymongo.server_api import ServerApi
 import asyncio
 import threading
 import time
-import subprocess
-import tempfile
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -456,85 +454,81 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-PROMETHEUS_OBFUSCATOR = r"""
---[[
-Prometheus Obfuscator - Full version
-]]
-local L = { ... } -- Your table here
--- Full implementation would be here
--- For this demo, we use a simplified version
--- But the real one would be the full script you provided
+def obfuscate_prometheus(code: str) -> tuple[bool, str]:
+    try:
+        key = random.randint(30, 230)
+        bytes_data = code.encode('utf-8')
+        obf_bytes = bytes([b ^ key for b in bytes_data])
+        b64 = base64.b64encode(obf_bytes).decode('ascii')
+        obfuscated = f'''-- Prometheus Obfuscator
+local _k={key}
+local _d=("{b64}"):gsub(".", function(c) return string.char((c:byte()^_k)%256) end)
+local _s=loadstring(_d)
+if _s then _s() else error("Failed to load") end'''
+        return True, obfuscated
+    except Exception as e:
+        return False, str(e)
 
-local function obfuscate(code)
-    local obfuscated = ""
-    local chars = {}
-    for i = 1, #code do
-        local c = string.byte(code, i)
-        table.insert(chars, tostring(c + 50))
-    end
-    obfuscated = "local d={" .. table.concat(chars, ",") .. "} local s='' for i=1,#d do s=s..string.char(d[i]-50) end loadstring(s)()"
-    return obfuscated
-end
-
-local file = io.open(arg[1], "r")
-if not file then
-    print("error: Cannot read input file")
-    os.exit(1)
-end
-local source = file:read("*a")
-file:close()
-
-local fn, err = load(source)
-if not fn then
-    print("error: " .. err)
-    os.exit(1)
-end
-
-local output = obfuscate(source)
-local outfile = io.open(arg[2], "w")
-if not outfile then
-    print("error: Cannot write output file")
-    os.exit(1)
-end
-outfile:write(output)
-outfile:close()
-print("ok")
-"""
-
-async def obfuscate_with_prometheus(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-        dumper_path = os.path.join(tmpdir, "prometheus.lua")
-
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-        with open(dumper_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_OBFUSCATOR)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", dumper_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            out = stdout.decode().strip()
-
-            if out.startswith("error:"):
-                return False, out[7:]
-
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            else:
-                return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Obfuscation timed out (30 seconds)"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found. Please install Lua."
-        except Exception as e:
-            return False, str(e)
+def is_lua_syntax_valid(code: str) -> tuple[bool, str]:
+    try:
+        lines = code.split('\n')
+        stack = []
+        in_string = False
+        string_char = None
+        in_comment = False
+        for line in lines:
+            i = 0
+            while i < len(line):
+                ch = line[i]
+                if not in_string and not in_comment:
+                    if ch == '-' and i+1 < len(line) and line[i+1] == '-':
+                        in_comment = True
+                        i += 1
+                    elif ch == '"' or ch == "'":
+                        in_string = True
+                        string_char = ch
+                    elif ch == '[' and i+1 < len(line) and line[i+1] == '[':
+                        in_comment = True
+                        i += 1
+                    elif ch == 't' and i+1 < len(line) and line[i+1] == 'h' and i+2 < len(line) and line[i+2] == 'e' and i+3 < len(line) and line[i+3] == 'n':
+                        stack.append('then')
+                    elif ch == 'd' and i+1 < len(line) and line[i+1] == 'o':
+                        stack.append('do')
+                    elif ch == 'f' and i+1 < len(line) and line[i+1] == 'u' and i+2 < len(line) and line[i+2] == 'n' and i+3 < len(line) and line[i+3] == 'c' and i+4 < len(line) and line[i+4] == 't' and i+5 < len(line) and line[i+5] == 'i' and i+6 < len(line) and line[i+6] == 'o' and i+7 < len(line) and line[i+7] == 'n':
+                        stack.append('function')
+                    elif ch == 'r' and i+1 < len(line) and line[i+1] == 'e' and i+2 < len(line) and line[i+2] == 'p' and i+3 < len(line) and line[i+3] == 'e' and i+4 < len(line) and line[i+4] == 'a' and i+5 < len(line) and line[i+5] == 't':
+                        stack.append('repeat')
+                    elif ch == 'f' and i+1 < len(line) and line[i+1] == 'o' and i+2 < len(line) and line[i+2] == 'r':
+                        stack.append('for')
+                    elif ch == 'w' and i+1 < len(line) and line[i+1] == 'h' and i+2 < len(line) and line[i+2] == 'i' and i+3 < len(line) and line[i+3] == 'l' and i+4 < len(line) and line[i+4] == 'e':
+                        stack.append('while')
+                    elif ch == 'e' and i+1 < len(line) and line[i+1] == 'n' and i+2 < len(line) and line[i+2] == 'd':
+                        if stack:
+                            stack.pop()
+                        else:
+                            return False, "Unmatched 'end'"
+                    elif ch == 'u' and i+1 < len(line) and line[i+1] == 'n' and i+2 < len(line) and line[i+2] == 't' and i+3 < len(line) and line[i+3] == 'i' and i+4 < len(line) and line[i+4] == 'l':
+                        stack.append('until')
+                elif in_string:
+                    if ch == string_char and (i == 0 or line[i-1] != '\\'):
+                        in_string = False
+                        string_char = None
+                elif in_comment:
+                    if ch == '-' and i+1 < len(line) and line[i+1] == '-':
+                        in_comment = False
+                        i += 1
+                    elif ch == ']' and i+1 < len(line) and line[i+1] == ']':
+                        in_comment = False
+                        i += 1
+                i += 1
+            if not in_string and not in_comment:
+                if line.strip() == '':
+                    pass
+        if stack:
+            return False, f"Unclosed block(s): {stack[-1]}"
+        return True, "Syntax OK"
+    except Exception as e:
+        return False, f"Error checking syntax: {e}"
 
 @bot.event
 async def on_ready():
@@ -582,7 +576,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua with anti-env detection and protector snippet preview.", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
-    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus obfuscator (checks syntax first).", inline=False)
+    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus (checks syntax first).", inline=False)
     emb.add_field(name="`.cmds`", value="Show this help menu.", inline=False)
     emb.add_field(name="`.db status / clear`", value="Check DB connection or clear logs (owner only).", inline=False)
     emb.add_field(name="`/ping`", value="Check bot latency (slash command).", inline=False)
@@ -714,15 +708,18 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Checking syntax & obfuscating {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = await obfuscate_with_prometheus(content)
+        syntax_ok, msg = is_lua_syntax_valid(content)
+        if not syntax_ok:
+            await proc.delete()
+            await ctx.reply(embed=discord.Embed(title="❌ Syntax Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+            return
+
+        success, result = obfuscate_prometheus(content)
         if not success:
             await proc.delete()
-            if "error:" in result or "syntax" in result.lower():
-                await ctx.reply(embed=discord.Embed(title="❌ Syntax Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
-            else:
-                await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
+            await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
             return
 
         obfuscated = result
