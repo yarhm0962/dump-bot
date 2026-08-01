@@ -549,15 +549,32 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
 {steps}
 """
         snippets = deobf.get("snippets", [])
-        if snippets:
-            desc += "\n**Protection Snippets:**\n```lua\n"
-            snippet_text = ""
-            for i, snippet in enumerate(snippets[:3]):
-                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
-            if len(snippet_text) > 500:
-                snippet_text = snippet_text[:500] + "\n... [truncated]"
-            desc += snippet_text + "```"
         content = deobf["result"]
+
+        # Decide what to show as preview
+        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
+            # We successfully unpacked – show 30% of deobfuscated code
+            preview_len = int(len(content) * 0.3)
+            preview_len = min(preview_len, 500)  # Cap at 500
+            if preview_len < 50:
+                preview_len = min(150, len(content))  # At least show something
+            preview = content[:preview_len]
+            if len(content) > preview_len:
+                preview += "... [truncated]"
+            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
+        else:
+            # Couldn't unpack – show the protection snippets
+            if snippets:
+                desc += "\n**Protection Snippets (raw obfuscator code):**\n```lua\n"
+                snippet_text = ""
+                for i, snippet in enumerate(snippets[:3]):
+                    snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
+                if len(snippet_text) > 500:
+                    snippet_text = snippet_text[:500] + "\n... [truncated]"
+                desc += snippet_text + "```"
+            else:
+                desc += "\n⚠️ No obfuscator snippets found."
+
     elif raw:
         desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
         content = decode_all_escapes(raw)
@@ -565,6 +582,7 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
         emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Empty result")
         return emb, None
 
+    # File handling: if content exists and is not empty
     if not content or len(content) < 5:
         emb = discord.Embed(title=title, color=0xe74c3c, description=desc+"\n❌ No usable code")
         return emb, None
@@ -572,21 +590,19 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     size_b = content.encode('utf-8')
     size_kb = len(size_b) / 1024
     file = None
-    preview = content[:500] + ("..." if len(content) > 500 else "")
-    desc_with_preview = desc + f"\n\n**Deobfuscated Code Preview:**\n```lua\n{preview}\n```"
-    if len(desc_with_preview) > 5900:
-        preview = preview[:300] + "..."
-        desc_with_preview = desc + f"\n\n**Deobfuscated Code Preview:**\n```lua\n{preview}\n```"
-        if len(desc_with_preview) > 5900:
-            desc_with_preview = desc + "\n\n📦 Full code sent as file (preview too large to display)."
-
     if size_kb > 10 or len(content) > 1800:
         file = File(io.BytesIO(size_b), filename="processed.lua")
-        if "Full code sent as file" not in desc_with_preview:
-            desc_with_preview += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
-        emb = discord.Embed(title=title, color=0x3498db, description=desc_with_preview)
+        # Ensure description isn't too long
+        if len(desc) > 5000:
+            desc = desc[:5000] + "... [truncated description]"
+        if not desc.endswith("Full code sent as file"):
+            desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
+        emb = discord.Embed(title=title, color=0x3498db, description=desc)
     else:
-        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc_with_preview)
+        # For small content, show full code preview
+        preview = content[:1500] + ("..." if len(content) > 1500 else "")
+        desc += f"\n\n**Full Deobfuscated Code:**\n```lua\n{preview}\n```"
+        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
