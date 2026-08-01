@@ -310,7 +310,6 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-# ---------- WeAreDevs Deobfuscator (Python) ----------
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
         patterns = [
@@ -332,7 +331,6 @@ def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
     max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
@@ -662,32 +660,32 @@ async def show_commands(ctx):
         description=f"Hello {ctx.author.mention}"
     )
     emb.add_field(
-        name="`Lua Deobf [.l]`",
+        name="**.l** `[]`",
         value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
         inline=False
     )
     emb.add_field(
-        name="`Fetch Lua [.get]`",
+        name="**.get** `[]`",
         value="Fetch and decode raw source from URL or attachment.",
         inline=False
     )
     emb.add_field(
-        name="`Env Logger [.env]`",
+        name="**.env** `[]`",
         value="Bypass anti-env checks and unpack the script.",
         inline=False
     )
     emb.add_field(
-        name="`Obfuscate [.obf]`",
+        name="**.obf** `[]`",
         value="Obfuscate Lua code using Prometheus (XOR base64).",
         inline=False
     )
     emb.add_field(
-        name="`Commands [.cmds]`",
+        name="**.cmds** `[]`",
         value="Show this help menu.",
         inline=False
     )
     emb.add_field(
-        name="`Database [.db]`",
+        name="**.db** `[]`",
         value="Database commands: `status`, `clear` (owner only).",
         inline=False
     )
