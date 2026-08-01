@@ -227,6 +227,7 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
+# ---------- Prometheus Deobfuscator (Lua) ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -310,6 +311,29 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
+# ---------- WeAreDevs Deobfuscator (Python) ----------
+def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
+    try:
+        patterns = [
+            r'loadstring\s*\(\s*["\']([A-Za-z0-9+/=]{20,})["\']\s*\)\s*\(?\s*\)?',
+            r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)',
+            r'local\s+_G\s*=\s*["\']([^"\']+)["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, code)
+            if m:
+                encoded = m.group(1)
+                try:
+                    decoded = base64.b64decode(encoded).decode('utf-8', errors='replace')
+                    if len(decoded) > 10:
+                        return True, decoded
+                except:
+                    pass
+        return False, "No WeAreDevs pattern found"
+    except Exception as e:
+        return False, str(e)
+
+# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
     max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
@@ -320,7 +344,7 @@ def deobfuscate_code(source_text):
             ("Lunr", r'return\(function\(L,M,I\)'),
             ("Luraph", r'--.*Luraph|luraph\.net'),
             ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
-            ("WeAreDevs", r'wearedevs\.net|WAD_OBF'),
+            ("WeAreDevs", r'wearedevs\.net|WAD_OBF|loadstring%s*%(%s*["\']%s*[A-Za-z0-9+/=]+%s*["\']'),
             ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
         ]
         lines = txt.split('\n')
@@ -624,7 +648,7 @@ async def db_clear(ctx):
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
-    emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua (Prometheus first, then enhanced fallback).", inline=False)
+    emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
     emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus (XOR base64).", inline=False)
@@ -651,6 +675,7 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
+        # Try Prometheus first
         success, result = await deobfuscate_prometheus_lua(content)
         if success:
             report = {
@@ -673,6 +698,30 @@ async def deobf_command(ctx, *, link=None):
                 logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
+        # Try WeAreDevs
+        success, result = deobfuscate_wearedevs(content)
+        if success:
+            report = {
+                "obfuscator": {"name": "WeAreDevs", "confidence": 100},
+                "steps": ["• Deobfuscated using WeAreDevs pattern"],
+                "layers_reached": 1,
+                "max_layers": 1,
+                "anti_found": [],
+                "status": "Fully unpacked",
+                "result": result,
+                "snippets": []
+            }
+            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+            await proc.delete()
+            if file:
+                await ctx.reply(embed=emb, file=file, mention_author=True)
+            else:
+                await ctx.reply(embed=emb, mention_author=True)
+            if logs_col is not None:
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            return
+
+        # Fallback to enhanced Python deobfuscator
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
@@ -701,13 +750,12 @@ async def deobf_command(ctx, *, link=None):
         if logs_col is not None:
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
-        await proc.delete()
+        try: await proc.delete()
+        except: pass
         await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long. Try a smaller file."), mention_author=True)
     except Exception as e:
-        try:
-            await proc.delete()
-        except:
-            pass
+        try: await proc.delete()
+        except: pass
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
