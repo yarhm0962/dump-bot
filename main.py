@@ -693,7 +693,7 @@ async def show_commands(ctx):
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
-    await ctx.reply(embed=emb, mention_author=True)
+    await ctx.send(embed=emb, mention_author=True)  # Fixed: use send, not reply
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
