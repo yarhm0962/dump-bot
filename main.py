@@ -227,7 +227,6 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- New Prometheus Deobfuscator (Lua) ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -311,15 +310,14 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
     max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
 
     def scan_signatures(txt):
         sigs = [
-            ("Prometheus", r'return\(function\(%.-%)local L={'),
-            ("Lunr", r'return\(function\(L,M,I'),
+            ("Prometheus", r'return\(function\(%.-%\)local L={'),
+            ("Lunr", r'return\(function\(L,M,I\)'),
             ("Luraph", r'--.*Luraph|luraph\.net'),
             ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
             ("WeAreDevs", r'wearedevs\.net|WAD_OBF'),
@@ -327,20 +325,23 @@ def deobfuscate_code(source_text):
         ]
         lines = txt.split('\n')
         for name, pat in sigs:
-            if re.search(pat, txt, re.I):
-                if name not in report["detected"]:
-                    report["detected"].append(name)
-                if "Anti" in name:
-                    report["anti"].append(name)
-                for i, line in enumerate(lines):
-                    if re.search(pat, line, re.I):
-                        start = max(0, i-1)
-                        end = min(len(lines), i+2)
-                        snippet = '\n'.join(lines[start:end])
-                        if snippet not in report["snippets"]:
-                            report["snippets"].append(snippet)
-                        if len(report["snippets"]) >= 10:
-                            break
+            try:
+                if re.search(pat, txt, re.I):
+                    if name not in report["detected"]:
+                        report["detected"].append(name)
+                    if "Anti" in name:
+                        report["anti"].append(name)
+                    for i, line in enumerate(lines):
+                        if re.search(pat, line, re.I):
+                            start = max(0, i-1)
+                            end = min(len(lines), i+2)
+                            snippet = '\n'.join(lines[start:end])
+                            if snippet not in report["snippets"]:
+                                report["snippets"].append(snippet)
+                            if len(report["snippets"]) >= 10:
+                                break
+            except re.error:
+                pass
 
     def clean_escapes(txt):
         txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
@@ -355,7 +356,8 @@ def deobfuscate_code(source_text):
                 out = base64.b64decode(chunk).decode('utf-8', 'replace')
                 if len(out) > len(chunk) and out != txt:
                     return True, out
-            except: pass
+            except:
+                pass
         return False, ""
 
     def decode_strchar(txt):
@@ -366,7 +368,8 @@ def deobfuscate_code(source_text):
             out = ''.join(chr(n) for n in nums)
             if len(out) > 30 and out != txt:
                 return True, out
-        except: pass
+        except:
+            pass
         return False, ""
 
     def decode_xor(txt):
@@ -379,7 +382,8 @@ def deobfuscate_code(source_text):
                 out = ''.join(chr(b ^ key) for b in nums)
                 if len(out) > 30 and out != txt:
                     return True, out
-            except: pass
+            except:
+                pass
         mx = re.search(r'["\']([^"\']{5,30})["\'].*?["\']([A-Za-z0-9+/=]{30,})["\']', txt, re.DOTALL)
         if mx:
             try:
@@ -387,7 +391,8 @@ def deobfuscate_code(source_text):
                 out = ''.join(chr(ord(c) ^ ord(k[i % len(k)])) for i, c in enumerate(d))
                 if len(out) > 30 and out != txt:
                     return True, out
-            except: pass
+            except:
+                pass
         return False, ""
 
     def extract_loadstring(txt):
@@ -423,14 +428,11 @@ def deobfuscate_code(source_text):
             buf = res
             changed = True
             report["steps"].append(f"Layer {depth}: loadstring extracted")
-        # Remove anti-debug traps
         buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
         buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
-        # Remove comments
         buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
         buf = re.sub(r'--.*$', '', buf, re.MULTILINE)
 
-    # Final cleanup
     buf = re.sub(r'\n\s*\n+', '\n', buf)
     return {
         "result": buf.strip(),
@@ -639,7 +641,6 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
-        # Try new Prometheus deobfuscator first (Lua)
         success, result = await deobfuscate_prometheus_lua(content)
         if success:
             report = {
@@ -662,7 +663,6 @@ async def deobf_command(ctx, *, link=None):
                 logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
-        # Fallback to enhanced Python deobfuscator
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
