@@ -656,23 +656,48 @@ async def db_clear(ctx):
 @bot.command(name="cmds")
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
-    help_text = (
-        "RblXLua Tool Commands\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Lua Deobf   [.l]   - Deobfuscate Lua (Prometheus, WeAreDevs, fallback)\n"
-        "Fetch Lua   [.get] - Fetch and decode raw source from URL/attachment\n"
-        "Env Logger  [.env] - Bypass anti-env checks and unpack scripts\n"
-        "Obfuscate   [.obf] - Obfuscate Lua code using Prometheus (XOR base64)\n"
-        "Commands    [.cmds]- Show this help menu\n"
-        "Database    [.db]  - Database commands: `status`, `clear` (owner only)\n"
-        "\nSlash Commands:\n"
-        "  /ping         - Check bot latency\n"
-        "  /channel_set  - Restrict commands to a channel\n"
-        "  /channel_view - View current restriction\n"
-        "  /channel_clear- Remove restriction\n"
-        "\nOwner can use commands anywhere. Channel restriction applies to others."
+    emb = discord.Embed(
+        title="RblXLua Tool Commands",
+        color=0x9b59b6,
+        description=f"Hello {ctx.author.mention}"
     )
-    await ctx.send(f"```{help_text}```", mention_author=True)
+    emb.add_field(
+        name="`Lua Deobf [.l]`",
+        value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
+        inline=False
+    )
+    emb.add_field(
+        name="`Fetch Lua [.get]`",
+        value="Fetch and decode raw source from URL or attachment.",
+        inline=False
+    )
+    emb.add_field(
+        name="`Env Logger [.env]`",
+        value="Bypass anti-env checks and unpack the script.",
+        inline=False
+    )
+    emb.add_field(
+        name="`Obfuscate [.obf]`",
+        value="Obfuscate Lua code using Prometheus (XOR base64).",
+        inline=False
+    )
+    emb.add_field(
+        name="`Commands [.cmds]`",
+        value="Show this help menu.",
+        inline=False
+    )
+    emb.add_field(
+        name="`Database [.db]`",
+        value="Database commands: `status`, `clear` (owner only).",
+        inline=False
+    )
+    emb.add_field(
+        name="**Slash Commands**",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction",
+        inline=False
+    )
+    emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
+    await ctx.send(embed=emb, mention_author=True)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
