@@ -21,6 +21,8 @@ from pymongo.server_api import ServerApi
 import asyncio
 import threading
 import time
+import subprocess
+import tempfile
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -225,15 +227,99 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
+# ---------- New Prometheus Deobfuscator (Lua) ----------
+PROMETHEUS_DEOBF_LUA = r"""
+local function DeobfuscatePrometheus(source)
+    local load = loadstring or load
+    local encoded = source:match("return%(function%(%.-%)local L={(.-)}")
+    if not encoded then return nil, "Not valid Prometheus format" end
+    local parts = {}
+    for s in encoded:gmatch('"(.-)"') do table.insert(parts, s) end
+    local function b64dec(data)
+        local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        data = data:gsub('[^'..b..'=]', '')
+        return (data:gsub('.', function(x)
+            if x == '=' then return '' end
+            local r,f='',(b:find(x)-1)
+            for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
+            return r
+        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+            if #x ~= 8 then return '' end
+            local c=0
+            for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+            return string.char(c)
+        end))
+    end
+    local output = {}
+    for _,chunk in ipairs(parts) do
+        local ok, res = pcall(b64dec, chunk)
+        if ok and res then table.insert(output, res) end
+    end
+    local raw = table.concat(output)
+    local clean = raw:gsub('%z', ''):gsub('%c+', '\n')
+    return clean
+end
+
+local file = io.open(arg[1], "r")
+if not file then print("ERROR: Cannot read input file") os.exit(1) end
+local source = file:read("*a")
+file:close()
+
+local result, err = DeobfuscatePrometheus(source)
+if not result then
+    print("ERROR: " .. err)
+    os.exit(1)
+end
+
+local out = io.open(arg[2], "w")
+if not out then print("ERROR: Cannot write output") os.exit(1) end
+out:write(result)
+out:close()
+print("SUCCESS")
+"""
+
+async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(PROMETHEUS_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
+
+# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
-    size_kb = len(source_text) / 1024
-    max_depth = 4 if size_kb > 500 else 6
+    max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
 
-    def scan_raw_signatures(txt):
+    def scan_signatures(txt):
         sigs = [
-            ("Prometheus", r'--.*Prometheus|levno-710'),
-            ("Lunr", r'--.*Lunr|return\(function\(L,M,I'),
+            ("Prometheus", r'return\(function\(%.-%)local L={'),
+            ("Lunr", r'return\(function\(L,M,I'),
             ("Luraph", r'--.*Luraph|luraph\.net'),
             ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
             ("WeAreDevs", r'wearedevs\.net|WAD_OBF'),
@@ -255,8 +341,6 @@ def deobfuscate_code(source_text):
                             report["snippets"].append(snippet)
                         if len(report["snippets"]) >= 10:
                             break
-
-    scan_raw_signatures(source_text)
 
     def clean_escapes(txt):
         txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
@@ -306,7 +390,14 @@ def deobfuscate_code(source_text):
             except: pass
         return False, ""
 
+    def extract_loadstring(txt):
+        m = re.search(r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)', txt)
+        if m:
+            return True, decode_all_escapes(m.group(1))
+        return False, ""
+
     buf = clean_escapes(source_text)
+    scan_signatures(buf)
     changed = True
     depth = 0
     while changed and depth < max_depth:
@@ -327,13 +418,22 @@ def deobfuscate_code(source_text):
             buf = res
             changed = True
             report["steps"].append(f"Layer {depth}: XOR decoded")
+        ok, res = extract_loadstring(buf)
+        if ok:
+            buf = res
+            changed = True
+            report["steps"].append(f"Layer {depth}: loadstring extracted")
+        # Remove anti-debug traps
         buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
         buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
+        # Remove comments
+        buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
+        buf = re.sub(r'--.*$', '', buf, re.MULTILINE)
 
-    buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
-    buf = re.sub(r'--.*$', '', buf, re.MULTILINE).strip()
+    # Final cleanup
+    buf = re.sub(r'\n\s*\n+', '\n', buf)
     return {
-        "result": buf,
+        "result": buf.strip(),
         "layers_done": depth,
         "detected": report["detected"],
         "anti_found": report["anti"],
@@ -512,10 +612,10 @@ async def db_clear(ctx):
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
-    emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua with anti-env detection and protector snippet preview.", inline=False)
+    emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua (Prometheus first, then enhanced fallback).", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
-    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus.", inline=False)
+    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus (XOR base64).", inline=False)
     emb.add_field(name="`.cmds`", value="Show this help menu.", inline=False)
     emb.add_field(name="`.db status / clear`", value="Check DB connection or clear logs (owner only).", inline=False)
     emb.add_field(name="`/ping`", value="Check bot latency (slash command).", inline=False)
@@ -539,6 +639,30 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
+        # Try new Prometheus deobfuscator first (Lua)
+        success, result = await deobfuscate_prometheus_lua(content)
+        if success:
+            report = {
+                "obfuscator": {"name": "Prometheus", "confidence": 100},
+                "steps": ["• Deobfuscated using Prometheus Lua function"],
+                "layers_reached": 1,
+                "max_layers": 1,
+                "anti_found": [],
+                "status": "Fully unpacked",
+                "result": result,
+                "snippets": []
+            }
+            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+            await proc.delete()
+            if file:
+                await ctx.reply(embed=emb, file=file, mention_author=True)
+            else:
+                await ctx.reply(embed=emb, mention_author=True)
+            if logs_col is not None:
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            return
+
+        # Fallback to enhanced Python deobfuscator
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
@@ -547,7 +671,7 @@ async def deobf_command(ctx, *, link=None):
 
         obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
         confidence = 100 if dec["detected"] else 100
-        max_layers = 4 if len(content) > 500000 else 6
+        max_layers = 8
         report = {
             "obfuscator": {"name": obfuscator_name, "confidence": confidence},
             "steps": [f"• {s}" for s in dec["steps"]],
@@ -568,7 +692,7 @@ async def deobf_command(ctx, *, link=None):
             logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long (over {timeout} seconds). Try a smaller file or use `.get` to fetch raw."), mention_author=True)
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long. Try a smaller file."), mention_author=True)
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
