@@ -660,32 +660,32 @@ async def show_commands(ctx):
         description=f"Hello {ctx.author.mention}"
     )
     emb.add_field(
-        name="**.l** `[]`",
+        name="`Lua Deobf [.l]`",
         value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
         inline=False
     )
     emb.add_field(
-        name="**.get** `[]`",
+        name="`Fetch Lua [.get]`",
         value="Fetch and decode raw source from URL or attachment.",
         inline=False
     )
     emb.add_field(
-        name="**.env** `[]`",
+        name="`Env Logger [.env]`",
         value="Bypass anti-env checks and unpack the script.",
         inline=False
     )
     emb.add_field(
-        name="**.obf** `[]`",
+        name="`Obfuscate [.obf]`",
         value="Obfuscate Lua code using Prometheus (XOR base64).",
         inline=False
     )
     emb.add_field(
-        name="**.cmds** `[]`",
+        name="`Commands [.cmds]`",
         value="Show this help menu.",
         inline=False
     )
     emb.add_field(
-        name="**.db** `[]`",
+        name="`Database [.db]`",
         value="Database commands: `status`, `clear` (owner only).",
         inline=False
     )
