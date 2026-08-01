@@ -23,7 +23,6 @@ import threading
 import time
 import subprocess
 import tempfile
-import ast
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -311,89 +310,86 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
-    if not source or "This File Was Protected By Galactic Protection" not in source:
-        return False, "Not a valid Galactic protected script"
+GALACTIC_DEOBF_LUA = r"""
+local function DeobfuscateGalactic(source)
+    if not source or not source:find("This File Was Protected By Galactic Protection") then return nil end
+    local code = source:gsub("`", '"'):gsub(";", ",")
+    local function resolveMath(str)
+        local num = tonumber(str)
+        if num then return tostring(num) end
+        local ok, res = pcall(loadstring or load, "return "..str)
+        return ok and tostring(res) or str
+    end
+    local changed
+    repeat
+        changed = false
+        code, local n = code:gsub("%b()", function(expr)
+            local inner = expr:sub(2,-2)
+            local clean = inner:gsub("%s+", "")
+            local res = resolveMath(clean)
+            if res ~= expr then changed = true end
+            return res
+        end)
+    until not changed
+    local wrapper = code:match("return%(function%([^)]*%)%s*local%s+M%s*=%b{.-}end%)%(%.%.%.%)") or code:match("return%(function%([^)]*%).-end%)%(%.%.%.%)")
+    if not wrapper then return nil end
+    local ok, res = pcall(loadstring or load, wrapper)
+    if not ok or type(res) ~= "string" then return nil end
+    local out = res:gsub("^loadstring%s*%(", ""):gsub("%)%s*$", "")
+    out = out:gsub("^%[%=*%[", ""):gsub("%]%=*%]$", ""):gsub("^[\"']", ""):gsub("[\"']$", "")
+    return out
+end
 
-    start = source.find("return(")
-    if start == -1:
-        return False, "Could not find 'return(' in script"
+local file = io.open(arg[1], "r")
+if not file then print("ERROR: Cannot read input file") os.exit(1) end
+local source = file:read("*a")
+file:close()
 
-    paren_count = 0
-    in_string = False
-    escape = False
-    wrapper = None
-    for i, ch in enumerate(source[start:], start):
-        if escape:
-            escape = False
-            continue
-        if ch == '\\':
-            escape = True
-            continue
-        if ch in ('"', "'"):
-            if not in_string:
-                in_string = ch
-            elif in_string == ch:
-                in_string = False
-            continue
-        if in_string:
-            continue
-        if ch == '(':
-            paren_count += 1
-        elif ch == ')':
-            paren_count -= 1
-            if paren_count == 0:
-                end = i + 1
-                wrapper = source[start:end]
-                break
-    if not wrapper:
-        return False, "Could not extract Galactic wrapper"
+local result = DeobfuscateGalactic(source)
+if not result then
+    print("ERROR: Not a valid Galactic protected script")
+    os.exit(1)
+end
 
-    work = wrapper.replace("`", '"').replace(";", ",")
+local out = io.open(arg[2], "w")
+if not out then print("ERROR: Cannot write output") os.exit(1) end
+out:write(result)
+out:close()
+print("SUCCESS")
+"""
 
-    patterns_arith = [
-        (r'\(\((-?\d+\.?\d*)\)\+\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) + float(m.group(2)))),
-        (r'\(\((-?\d+\.?\d*)\)\-\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) - float(m.group(2)))),
-        (r'\(\((-?\d+\.?\d*)\)\*\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) * float(m.group(2)))),
-        (r'\(\((-?\d+\.?\d*)\)\/\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) / float(m.group(2)))),
-        (r'\(\((-?\d+\.?\d*)\)\%\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) % float(m.group(2)))),
-    ]
+async def deobfuscate_galactic_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
 
-    changed = True
-    while changed:
-        changed = False
-        for pat, repl in patterns_arith:
-            new_work, count = re.subn(pat, repl, work)
-            if count:
-                work = new_work
-                changed = True
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(GALACTIC_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
 
-    work_py = work.replace('..', '+')
-    try:
-        result_str = eval(work_py, {"__builtins__": {}}, {"loadstring": lambda x: x})
-    except Exception as e:
-        match = re.search(r'loadstring\(\[==\[(.*?)\]==\]\)', work, re.DOTALL)
-        if match:
-            result_str = match.group(1)
-        else:
-            match = re.search(r'loadstring\(["\'](.*?)["\']\)', work, re.DOTALL)
-            if match:
-                result_str = match.group(1)
-            else:
-                return False, f"Failed to evaluate Galactic expression: {e}"
-
-    if not isinstance(result_str, str):
-        return False, "Evaluated result is not a string"
-
-    cleaned = result_str
-    cleaned = re.sub(r'^loadstring\(', '', cleaned)
-    cleaned = re.sub(r'\)$', '', cleaned)
-    cleaned = re.sub(r'^\[==\[', '', cleaned)
-    cleaned = re.sub(r'\]==\]$', '', cleaned)
-    cleaned = re.sub(r'^["\']', '', cleaned)
-    cleaned = re.sub(r'["\']$', '', cleaned)
-
-    return True, cleaned
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
 
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
@@ -810,7 +806,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Galactic Deobf [.galactic]`",
-        value="Deobfuscate Galactic Protection obfuscated scripts (pure Python).",
+        value="Deobfuscate Galactic Protection obfuscated scripts (Lua engine).",
         inline=False
     )
     emb.add_field(
@@ -846,7 +842,7 @@ async def galactic_command(ctx, *, link=None):
 
     proc = await ctx.reply(f"🔓 Deobfuscating Galactic {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = deobfuscate_galactic_python(content)
+        success, result = await deobfuscate_galactic_lua(content)
         if not success:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Deobfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
@@ -854,7 +850,7 @@ async def galactic_command(ctx, *, link=None):
 
         report = {
             "obfuscator": {"name": "Galactic Protection", "confidence": 100},
-            "steps": ["• Deobfuscated using Python Galactic deobfuscator"],
+            "steps": ["• Deobfuscated using Galactic Lua engine"],
             "layers_reached": 1,
             "max_layers": 1,
             "anti_found": [],
