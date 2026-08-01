@@ -23,6 +23,7 @@ import threading
 import time
 import subprocess
 import tempfile
+import ast
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -310,86 +311,100 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-GALACTIC_DEOBF_LUA = r"""
-local function DeobfuscateGalactic(source)
-    if not source or not source:find("This File Was Protected By Galactic Protection") then return nil end
-    local code = source:gsub("`", '"'):gsub(";", ",")
-    local function resolveMath(str)
-        local num = tonumber(str)
-        if num then return tostring(num) end
-        local ok, res = pcall(loadstring or load, "return "..str)
-        return ok and tostring(res) or str
-    end
-    local changed
-    repeat
-        changed = false
-        code, local n = code:gsub("%b()", function(expr)
-            local inner = expr:sub(2,-2)
-            local clean = inner:gsub("%s+", "")
-            local res = resolveMath(clean)
-            if res ~= expr then changed = true end
-            return res
-        end)
-    until not changed
-    local wrapper = code:match("return%(function%([^)]*%)%s*local%s+M%s*=%b{.-}end%)%(%.%.%.%)") or code:match("return%(function%([^)]*%).-end%)%(%.%.%.%)")
-    if not wrapper then return nil end
-    local ok, res = pcall(loadstring or load, wrapper)
-    if not ok or type(res) ~= "string" then return nil end
-    local out = res:gsub("^loadstring%s*%(", ""):gsub("%)%s*$", "")
-    out = out:gsub("^%[%=*%[", ""):gsub("%]%=*%]$", ""):gsub("^[\"']", ""):gsub("[\"']$", "")
-    return out
-end
+def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
+    if not source or "This File Was Protected By Galactic Protection" not in source:
+        return False, "Not a valid Galactic protected script"
 
-local file = io.open(arg[1], "r")
-if not file then print("ERROR: Cannot read input file") os.exit(1) end
-local source = file:read("*a")
-file:close()
+    code = source.replace('`', '"').replace(';', ',')
 
-local result = DeobfuscateGalactic(source)
-if not result then
-    print("ERROR: Not a valid Galactic protected script")
-    os.exit(1)
-end
-
-local out = io.open(arg[2], "w")
-if not out then print("ERROR: Cannot write output") os.exit(1) end
-out:write(result)
-out:close()
-print("SUCCESS")
-"""
-
-async def deobfuscate_galactic_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(GALACTIC_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
+    def resolve_math(expr):
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
+            # Evaluate arithmetic expression safely
+            # Only allow numbers and basic operators
+            if re.match(r'^[\d+\-*/().%\s]+$', expr):
+                result = eval(expr, {"__builtins__": {}}, {})
+                return str(result)
+            return expr
+        except:
+            return expr
+
+    changed = True
+    while changed:
+        changed = False
+        # Find balanced parentheses and evaluate inner expressions
+        new_code = ""
+        i = 0
+        while i < len(code):
+            if code[i] == '(':
+                # Find matching closing parenthesis
+                paren_count = 1
+                j = i + 1
+                in_string = False
+                escape = False
+                while j < len(code):
+                    if escape:
+                        escape = False
+                    elif code[j] == '\\':
+                        escape = True
+                    elif code[j] in ('"', "'") and not in_string:
+                        in_string = code[j]
+                    elif in_string and code[j] == in_string:
+                        in_string = False
+                    elif not in_string:
+                        if code[j] == '(':
+                            paren_count += 1
+                        elif code[j] == ')':
+                            paren_count -= 1
+                            if paren_count == 0:
+                                break
+                    j += 1
+                if j < len(code) and paren_count == 0:
+                    inner = code[i+1:j]
+                    clean = inner.replace(" ", "").replace("\t", "").replace("\n", "")
+                    res = resolve_math(clean)
+                    if res != inner and res != code[i:j+1]:
+                        changed = True
+                    new_code += res
+                    i = j + 1
+                    continue
+            new_code += code[i]
+            i += 1
+        code = new_code
+
+    # Extract wrapper
+    wrapper_patterns = [
+        r'return\(function\([^)]*\)\s*local\s+M\s*=\s*\{[^}]*\}end\)\(\.\.\.\)',
+        r'return\(function\([^)]*\).-end\)\(\.\.\.\)'
+    ]
+    wrapper = None
+    for pat in wrapper_patterns:
+        match = re.search(pat, code, re.DOTALL)
+        if match:
+            wrapper = match.group(0)
+            break
+
+    if not wrapper:
+        return False, "Could not extract Galactic wrapper"
+
+    # Execute wrapper to get the string using a safe namespace
+    ns = {"loadstring": lambda x: x}
+    try:
+        result = eval(wrapper, {"__builtins__": {}}, ns)
+    except Exception as e:
+        return False, f"Failed to evaluate wrapper: {e}"
+
+    if not isinstance(result, str):
+        return False, "Evaluated result is not a string"
+
+    out = result
+    out = re.sub(r'^loadstring\s*\(', '', out)
+    out = re.sub(r'\)\s*$', '', out)
+    out = re.sub(r'^\[=*\[', '', out)
+    out = re.sub(r'\]=*\]$', '', out)
+    out = re.sub(r'^[\'"]', '', out)
+    out = re.sub(r'[\'"]$', '', out)
+
+    return True, out
 
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
@@ -806,7 +821,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Galactic Deobf [.galactic]`",
-        value="Deobfuscate Galactic Protection obfuscated scripts (Lua engine).",
+        value="Deobfuscate Galactic Protection obfuscated scripts (pure Python).",
         inline=False
     )
     emb.add_field(
@@ -842,7 +857,7 @@ async def galactic_command(ctx, *, link=None):
 
     proc = await ctx.reply(f"🔓 Deobfuscating Galactic {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = await deobfuscate_galactic_lua(content)
+        success, result = deobfuscate_galactic_python(content)
         if not success:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Deobfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
@@ -850,7 +865,7 @@ async def galactic_command(ctx, *, link=None):
 
         report = {
             "obfuscator": {"name": "Galactic Protection", "confidence": 100},
-            "steps": ["• Deobfuscated using Galactic Lua engine"],
+            "steps": ["• Deobfuscated using Python Galactic engine"],
             "layers_reached": 1,
             "max_layers": 1,
             "anti_found": [],
@@ -1070,7 +1085,7 @@ async def obfuscate_command(ctx, *, link=None):
             emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
         else:
             preview = obfuscated[:1500] + ("\n... [truncated]" if len(obfuscated) > 1500 else "")
-            desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
+            desc += f("\n\n**Preview:**\n```lua\n{preview}\n```")
             emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
         emb.set_footer(text=f"Requested by {ctx.author}")
         await proc.delete()
