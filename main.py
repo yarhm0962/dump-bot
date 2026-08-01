@@ -228,7 +228,6 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- Prometheus Deobfuscator ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -312,32 +311,47 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-# ---------- Galactic Deobfuscator (Python) ----------
 def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
-    if not source or not source.find("This File Was Protected By Galactic Protection"):
+    if not source or "This File Was Protected By Galactic Protection" not in source:
         return False, "Not a valid Galactic protected script"
 
-    # Extract the wrapper: return(function(...) ... end)(...)
-    wrapper = re.search(r'return\(function\(%.-%\)end\)\(%.%.%.\)', source) or re.search(r'return\(function\(%.-%\)\)\(%.%.%.\)', source)
+    start = source.find("return(")
+    if start == -1:
+        return False, "Could not find 'return(' in script"
+
+    paren_count = 0
+    in_string = False
+    escape = False
+    wrapper = None
+    for i, ch in enumerate(source[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch in ('"', "'"):
+            if not in_string:
+                in_string = ch
+            elif in_string == ch:
+                in_string = False
+            continue
+        if in_string:
+            continue
+        if ch == '(':
+            paren_count += 1
+        elif ch == ')':
+            paren_count -= 1
+            if paren_count == 0:
+                end = i + 1
+                wrapper = source[start:end]
+                break
     if not wrapper:
         return False, "Could not extract Galactic wrapper"
 
-    work = wrapper.group(0)
-    work = work.replace("`", '"').replace(";", ",")
+    work = wrapper.replace("`", '"').replace(";", ",")
 
-    # Perform arithmetic substitutions iteratively
-    def compute_arith(match):
-        op = match.group(0)
-        # Patterns: ((num)+(num)), ((num)-(num)), ((num)*(num)), ((num)/(num)), ((num)%(num))
-        # Extract numbers and operator
-        # We'll match the inner parts separately
-        inner = match.group(0)[1:-1]  # remove outer parentheses? Actually we need to extract numbers
-        # Better: use groups from the regex
-        # We'll re-apply regex to each match to get a,b,op
-        return ""
-
-    # We'll use a loop with regex substitutions for each operator
-    patterns = [
+    patterns_arith = [
         (r'\(\((-?\d+\.?\d*)\)\+\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) + float(m.group(2)))),
         (r'\(\((-?\d+\.?\d*)\)\-\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) - float(m.group(2)))),
         (r'\(\((-?\d+\.?\d*)\)\*\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) * float(m.group(2)))),
@@ -348,26 +362,23 @@ def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
     changed = True
     while changed:
         changed = False
-        for pat, repl in patterns:
+        for pat, repl in patterns_arith:
             new_work, count = re.subn(pat, repl, work)
             if count:
                 work = new_work
                 changed = True
 
-    # Now work should be a string literal like "loadstring([==[ ... ]==])"
-    # Use ast.literal_eval to get the string
     try:
-        # First try to evaluate as a literal
         result_str = ast.literal_eval(work)
-    except:
-        # If that fails, try to evaluate the expression (maybe it's a concatenation)
-        # But Galactic typically produces a single literal
-        return False, "Failed to evaluate Galactic expression"
+    except Exception:
+        try:
+            result_str = ast.literal_eval(work)
+        except Exception as e:
+            return False, f"Failed to evaluate Galactic expression: {e}"
 
     if not isinstance(result_str, str):
         return False, "Evaluated result is not a string"
 
-    # Clean the string: remove loadstring(...), brackets, quotes
     cleaned = result_str
     cleaned = re.sub(r'^loadstring\(', '', cleaned)
     cleaned = re.sub(r'\)$', '', cleaned)
@@ -378,7 +389,6 @@ def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
 
     return True, cleaned
 
-# ---------- WeAreDevs Deobfuscator ----------
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
         patterns = [
@@ -400,7 +410,6 @@ def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
     max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
