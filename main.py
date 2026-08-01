@@ -227,6 +227,7 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
+# ---------- Prometheus Deobfuscator ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -310,6 +311,76 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
+# ---------- Galactic Deobfuscator ----------
+GALACTIC_DEOBF_LUA = r"""
+local function DeobfuscateGalactic(source)
+    if not source or not source:find("This File Was Protected By Galactic Protection") then return nil end
+    local wrapper = source:match("return%(function%(%.-%)end%)%(%.%.%.%)") or source:match("return%(function%(%.-%)%)%(%.%.%.%)")
+    if not wrapper then return nil end
+    local work = wrapper:gsub("`", '"'):gsub(";", ",")
+    work = work:gsub("%((%-?%d+%.?%d*)%+%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)+tonumber(b) end)
+    work = work:gsub("%((%-?%d+%.?%d*)%-%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)-tonumber(b) end)
+    work = work:gsub("%((%-?%d+%.?%d*)%*%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)*tonumber(b) end)
+    work = work:gsub("%((%-?%d+%.?%d*)%/%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)/tonumber(b) end)
+    work = work:gsub("%((%-?%d+%.?%d*)%%%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)%tonumber(b) end)
+    local ok, res = pcall(loadstring or load, "return "..work)
+    if not ok or type(res)~="string" then return nil end
+    local out = res:gsub("^loadstring%(", ""):gsub("%)$", ""):gsub("^%[==%[", ""):gsub("%]==%]$", ""):gsub("^[\"']", ""):gsub("[\"']$", "")
+    return out
+end
+
+local file = io.open(arg[1], "r")
+if not file then print("ERROR: Cannot read input file") os.exit(1) end
+local source = file:read("*a")
+file:close()
+
+local result = DeobfuscateGalactic(source)
+if not result then
+    print("ERROR: Not a valid Galactic protected script")
+    os.exit(1)
+end
+
+local out = io.open(arg[2], "w")
+if not out then print("ERROR: Cannot write output") os.exit(1) end
+out:write(result)
+out:close()
+print("SUCCESS")
+"""
+
+async def deobfuscate_galactic_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(GALACTIC_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
+
+# ---------- WeAreDevs Deobfuscator ----------
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
         patterns = [
@@ -331,6 +402,7 @@ def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+# ---------- Enhanced Python Deobfuscator ----------
 def deobfuscate_code(source_text):
     max_depth = 8
     report = {"detected": [], "steps": [], "anti": [], "snippets": []}
@@ -486,7 +558,6 @@ class EnvBypassDumper:
             (r'if\s*type\s*\(\s*rawget\s*\)\s*~=', '--[[rawget type check removed]]'),
             (r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring', '--[[loadstring check removed]]'),
             (r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil', '--[[_p/_j check removed]]'),
-            # Additional patterns for the given protector
             (r'local\s+_v_logDetect\s*=\s*function\(\)\s*_v_p\(_v_err,\s*"logging detected"\);\s*while\s+true\s+do\s+end;\s*end;', '--[[logDetect removed]]'),
             (r'_v_logDetect\(\)', '--[[logDetect call removed]]'),
             (r'if\s+not\s+_c_v\(_v_t\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_t check removed]]'),
@@ -503,7 +574,6 @@ class EnvBypassDumper:
         ]
         out = src
         for pat, repl in patterns_remove:
-            # Capture snippets before removal
             matches = list(re.finditer(pat, out, re.DOTALL | re.IGNORECASE))
             for m in matches:
                 snippet = out[m.start():m.end()]
@@ -548,7 +618,6 @@ class EnvBypassDumper:
         out = self.remove_anti_env_checks(out)
         out = self.patch_function_checks(out)
         out = self.inject_dummy_returns(out)
-        # Also neutralize the _v_logDetect function itself if still present
         out = re.sub(r'local\s+function\s+_v_logDetect\(\)[^;]*;', '--[[logDetect removed]]', out, flags=re.DOTALL)
         return {
             "patched_code": out.strip(),
@@ -632,7 +701,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
         preview = content[:500] + ("..." if len(content) > 500 else "")
         desc += f"\n\n**Raw Code Preview:**\n```lua\n{preview}\n```"
 
-    # Always add file if content large
     if size_kb > 10 or len(content) > 1800:
         file = File(io.BytesIO(size_b), filename="processed.lua")
         if len(desc) > 5000:
@@ -728,6 +796,11 @@ async def show_commands(ctx):
         inline=False
     )
     emb.add_field(
+        name="`Galactic Deobf [.galactic]`",
+        value="Deobfuscate Galactic Protection obfuscated scripts.",
+        inline=False
+    )
+    emb.add_field(
         name="`Commands [.cmds]`",
         value="Show this help menu.",
         inline=False
@@ -744,6 +817,51 @@ async def show_commands(ctx):
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.send(embed=emb, mention_author=True)
+
+@bot.command(name="galactic")
+async def galactic_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if not link:
+        content = await extract_code(ctx)
+    else:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    if not content:
+        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
+        return await ctx.reply(embed=emb, mention_author=True)
+
+    proc = await ctx.reply(f"🔓 Deobfuscating Galactic {ctx.author.mention}...", mention_author=True)
+    try:
+        success, result = await deobfuscate_galactic_lua(content)
+        if not success:
+            await proc.delete()
+            await ctx.reply(embed=discord.Embed(title="❌ Deobfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
+            return
+
+        # Build report for Galactic
+        report = {
+            "obfuscator": {"name": "Galactic Protection", "confidence": 100},
+            "steps": ["• Deobfuscated using Galactic Lua function"],
+            "layers_reached": 1,
+            "max_layers": 1,
+            "anti_found": [],
+            "status": "Fully unpacked",
+            "result": result,
+            "snippets": []
+        }
+        emb, file = make_result_embed(ctx, "🔓 Galactic Deobfuscation Result", deobf=report)
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "galactic", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+        print(f"Galactic error: {e}")
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
@@ -889,12 +1007,11 @@ async def env_command(ctx, *, link=None):
         bypass_result = dumper.full_bypass(content)
         patched_code = bypass_result["patched_code"]
         bypassed = bypass_result["bypassed_count"]
-        snippets = dumper.removed_snippets[:10]  # store for preview
+        snippets = dumper.removed_snippets[:10]
 
         if not patched_code:
             patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
 
-        # Build embed with preview
         env_report = {
             "patched_code": patched_code,
             "bypassed_count": bypassed,
