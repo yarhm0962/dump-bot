@@ -527,9 +527,12 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
         snippets = deobf.get("snippets", [])
         if snippets:
             desc += "\n**Protection Snippets:**\n```lua\n"
-            for i, snippet in enumerate(snippets[:5]):
-                desc += f"-- Snippet {i+1}:\n{snippet}\n\n"
-            desc += "```"
+            snippet_text = ""
+            for i, snippet in enumerate(snippets[:3]):
+                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
+            if len(snippet_text) > 500:
+                snippet_text = snippet_text[:500] + "\n... [truncated]"
+            desc += snippet_text + "```"
         content = deobf["result"]
     elif raw:
         desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
@@ -545,14 +548,21 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     size_b = content.encode('utf-8')
     size_kb = len(size_b) / 1024
     file = None
+    preview = content[:500] + ("..." if len(content) > 500 else "")
+    desc_with_preview = desc + f"\n\n**Deobfuscated Code Preview:**\n```lua\n{preview}\n```"
+    if len(desc_with_preview) > 5900:
+        preview = preview[:300] + "..."
+        desc_with_preview = desc + f"\n\n**Deobfuscated Code Preview:**\n```lua\n{preview}\n```"
+        if len(desc_with_preview) > 5900:
+            desc_with_preview = desc + "\n\n📦 Full code sent as file (preview too large to display)."
+
     if size_kb > 10 or len(content) > 1800:
         file = File(io.BytesIO(size_b), filename="processed.lua")
-        desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
-        emb = discord.Embed(title=title, color=0x3498db, description=desc)
+        if "Full code sent as file" not in desc_with_preview:
+            desc_with_preview += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
+        emb = discord.Embed(title=title, color=0x3498db, description=desc_with_preview)
     else:
-        prev = content[:1500] + ("\n... [truncated]" if len(content) > 1500 else "")
-        desc += f"\n\n**Deobfuscated Code Preview:**\n```lua\n{prev}\n```"
-        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
+        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc_with_preview)
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
@@ -694,7 +704,10 @@ async def deobf_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long. Try a smaller file."), mention_author=True)
     except Exception as e:
-        await proc.delete()
+        try:
+            await proc.delete()
+        except:
+            pass
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
