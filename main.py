@@ -21,8 +21,6 @@ from pymongo.server_api import ServerApi
 import asyncio
 import threading
 import time
-import subprocess
-import tempfile
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -55,7 +53,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# ---------- Channel restriction ----------
 def get_allowed_channel():
     if settings_col is None:
         return None
@@ -91,7 +88,6 @@ async def global_channel_check(ctx):
     await ctx.send(f"⚠️ Commands are restricted to <#{allowed}>. Please use them there.")
     return False
 
-# ---------- Slash commands ----------
 @bot.tree.command(name="ping", description="Check bot latency")
 async def slash_ping(interaction: discord.Interaction):
     start = time.perf_counter()
@@ -132,7 +128,6 @@ async def channel_clear(interaction: discord.Interaction):
     clear_allowed_channel()
     await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
 
-# ---------- Prefix .ping ----------
 @bot.command(name="ping")
 async def prefix_ping(ctx):
     start = time.perf_counter()
@@ -147,7 +142,6 @@ async def prefix_ping(ctx):
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     await ctx.reply(embed=embed, mention_author=True)
 
-# ---------- Utility functions ----------
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
@@ -199,11 +193,7 @@ async def fetch_content(url: str) -> tuple[bool, str, str]:
 
 async def extract_code(ctx):
     content = ""
-    # First, check attachments
     for att in ctx.message.attachments:
-        # Allowed extensions: .lua, .txt, .luau, .rbxmx, .rbxlua, .lua.txt, etc.
-        # We'll accept any file that ends with these, plus a fallback to try reading any text file.
-        # Also accept .rbxmx as seen in the screenshot.
         if att.filename.lower().endswith(('.lua', '.txt', '.luau', '.rbxmx', '.rbxlua', '.lua.txt')):
             try:
                 data = await att.read()
@@ -212,17 +202,13 @@ async def extract_code(ctx):
             except:
                 pass
         else:
-            # If the extension is not recognized, try to read it as text anyway (maybe it's a Lua file without proper extension)
             try:
                 data = await att.read()
-                # Try to decode as utf-8, if it fails we skip
                 content = data.decode('utf-8', errors='replace')
-                # If it looks like Lua (contains common keywords), we accept it
                 if re.search(r'(function|local|if|then|end|print|return)', content, re.I):
                     return decode_all_escapes(content)
             except:
                 pass
-    # If no attachment, check code blocks
     code_blocks = re.findall(r'```(?:lua)?\n(.*?)```', ctx.message.content, re.DOTALL)
     if code_blocks: return decode_all_escapes('\n'.join(code_blocks))
     inline = re.findall(r'`([^`]+)`', ctx.message.content)
@@ -234,12 +220,11 @@ async def extract_code(ctx):
     if ctx.message.reference:
         try:
             ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            return await extract_code(ref_msg)  # Recursively extract from referenced message
+            return await extract_code(ref_msg)
         except: pass
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- Deobfuscator ----------
 def deobfuscate_code(source_text):
     size_kb = len(source_text) / 1024
     max_depth = 4 if size_kb > 500 else 6
@@ -469,7 +454,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ---------- Obfuscation (XOR) ----------
 def xor_obfuscate(source):
     key = random.randint(30, 230)
     bytes_list = [ord(c) ^ key for c in source]
@@ -483,33 +467,18 @@ local _f=loadstring or load
 local _fn,_err=_f(_s)
 if _fn then _fn() else error(_err) end'''
 
-async def check_lua_syntax(code: str) -> tuple[bool, str]:
-    """Check Lua syntax by running 'lua -e' with the code."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.lua', delete=False) as f:
-        f.write(code)
-        tmp_path = f.name
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as: {bot.user}")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            'lua', '-e',
-            f'local f=io.open("{tmp_path}","r"); local code=f:read("*a"); f:close(); local fn, err=load(code); if not fn then print("error: "..err) else print("ok") end',
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
-        out = stdout.decode().strip()
-        if out.startswith("error:"):
-            return False, out[7:]
-        if out == "ok":
-            return True, "Syntax OK"
-        return True, "Unknown syntax result"
+        await bot.tree.sync()
+        print("✅ Slash commands synced globally")
     except Exception as e:
-        return False, f"Error checking syntax: {e}"
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        print(f"⚠️ Failed to sync slash commands: {e}")
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_*"))
+    if db is not None:
+        print(f"✅ Database Ready: {db.name}")
 
-# ---------- Prefix Commands ----------
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
@@ -544,7 +513,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua with anti-env detection and protector snippet preview.", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
-    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code with XOR + random key (checks syntax first).", inline=False)
+    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code with XOR + random key (no syntax check).", inline=False)
     emb.add_field(name="`.cmds`", value="Show this help menu.", inline=False)
     emb.add_field(name="`.db status / clear`", value="Check DB connection or clear logs (owner only).", inline=False)
     emb.add_field(name="`/ping`", value="Check bot latency (slash command).", inline=False)
@@ -676,14 +645,8 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Checking syntax & obfuscating {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating {ctx.author.mention}...", mention_author=True)
     try:
-        syntax_ok, msg = await check_lua_syntax(content)
-        if not syntax_ok:
-            await proc.delete()
-            await ctx.reply(embed=discord.Embed(title="❌ Syntax Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-            return
-
         obfuscated = xor_obfuscate(content)
         if not obfuscated:
             await proc.delete()
@@ -714,7 +677,6 @@ async def obfuscate_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
-# ---------- Keep-alive ----------
 def keep_alive():
     while True:
         try:
