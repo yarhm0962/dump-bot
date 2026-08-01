@@ -469,67 +469,6 @@ if _s then _s() else error("Failed to load") end'''
     except Exception as e:
         return False, str(e)
 
-def is_lua_syntax_valid(code: str) -> tuple[bool, str]:
-    try:
-        lines = code.split('\n')
-        stack = []
-        in_string = False
-        string_char = None
-        in_comment = False
-        for line in lines:
-            i = 0
-            while i < len(line):
-                ch = line[i]
-                if not in_string and not in_comment:
-                    if ch == '-' and i+1 < len(line) and line[i+1] == '-':
-                        in_comment = True
-                        i += 1
-                    elif ch == '"' or ch == "'":
-                        in_string = True
-                        string_char = ch
-                    elif ch == '[' and i+1 < len(line) and line[i+1] == '[':
-                        in_comment = True
-                        i += 1
-                    elif ch == 't' and i+1 < len(line) and line[i+1] == 'h' and i+2 < len(line) and line[i+2] == 'e' and i+3 < len(line) and line[i+3] == 'n':
-                        stack.append('then')
-                    elif ch == 'd' and i+1 < len(line) and line[i+1] == 'o':
-                        stack.append('do')
-                    elif ch == 'f' and i+1 < len(line) and line[i+1] == 'u' and i+2 < len(line) and line[i+2] == 'n' and i+3 < len(line) and line[i+3] == 'c' and i+4 < len(line) and line[i+4] == 't' and i+5 < len(line) and line[i+5] == 'i' and i+6 < len(line) and line[i+6] == 'o' and i+7 < len(line) and line[i+7] == 'n':
-                        stack.append('function')
-                    elif ch == 'r' and i+1 < len(line) and line[i+1] == 'e' and i+2 < len(line) and line[i+2] == 'p' and i+3 < len(line) and line[i+3] == 'e' and i+4 < len(line) and line[i+4] == 'a' and i+5 < len(line) and line[i+5] == 't':
-                        stack.append('repeat')
-                    elif ch == 'f' and i+1 < len(line) and line[i+1] == 'o' and i+2 < len(line) and line[i+2] == 'r':
-                        stack.append('for')
-                    elif ch == 'w' and i+1 < len(line) and line[i+1] == 'h' and i+2 < len(line) and line[i+2] == 'i' and i+3 < len(line) and line[i+3] == 'l' and i+4 < len(line) and line[i+4] == 'e':
-                        stack.append('while')
-                    elif ch == 'e' and i+1 < len(line) and line[i+1] == 'n' and i+2 < len(line) and line[i+2] == 'd':
-                        if stack:
-                            stack.pop()
-                        else:
-                            return False, "Unmatched 'end'"
-                    elif ch == 'u' and i+1 < len(line) and line[i+1] == 'n' and i+2 < len(line) and line[i+2] == 't' and i+3 < len(line) and line[i+3] == 'i' and i+4 < len(line) and line[i+4] == 'l':
-                        stack.append('until')
-                elif in_string:
-                    if ch == string_char and (i == 0 or line[i-1] != '\\'):
-                        in_string = False
-                        string_char = None
-                elif in_comment:
-                    if ch == '-' and i+1 < len(line) and line[i+1] == '-':
-                        in_comment = False
-                        i += 1
-                    elif ch == ']' and i+1 < len(line) and line[i+1] == ']':
-                        in_comment = False
-                        i += 1
-                i += 1
-            if not in_string and not in_comment:
-                if line.strip() == '':
-                    pass
-        if stack:
-            return False, f"Unclosed block(s): {stack[-1]}"
-        return True, "Syntax OK"
-    except Exception as e:
-        return False, f"Error checking syntax: {e}"
-
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -576,7 +515,7 @@ async def show_commands(ctx):
     emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua with anti-env detection and protector snippet preview.", inline=False)
     emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
     emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
-    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus (checks syntax first).", inline=False)
+    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus.", inline=False)
     emb.add_field(name="`.cmds`", value="Show this help menu.", inline=False)
     emb.add_field(name="`.db status / clear`", value="Check DB connection or clear logs (owner only).", inline=False)
     emb.add_field(name="`/ping`", value="Check bot latency (slash command).", inline=False)
@@ -708,14 +647,8 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Checking syntax & obfuscating {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
     try:
-        syntax_ok, msg = is_lua_syntax_valid(content)
-        if not syntax_ok:
-            await proc.delete()
-            await ctx.reply(embed=discord.Embed(title="❌ Syntax Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-            return
-
         success, result = obfuscate_prometheus(content)
         if not success:
             await proc.delete()
