@@ -658,12 +658,12 @@ async def show_commands(ctx):
     await delete_cmds_only(ctx)
     emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}")
     emb.add_field(
-        name="**`Lua`** [`.l`]",
+        name="**`Lua Deobf`** [`.l`]",
         value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
         inline=False
     )
     emb.add_field(
-        name="**`Get`** [`.get`]",
+        name="**`Fetch Lua`** [`.get`]",
         value="Fetch and decode raw source from URL or attachment.",
         inline=False
     )
@@ -673,17 +673,17 @@ async def show_commands(ctx):
         inline=False
     )
     emb.add_field(
-        name="**`Obf`** [`.obf`]",
+        name="**`Obfuscate`** [`.obf`]",
         value="Obfuscate Lua code using Prometheus (XOR base64).",
         inline=False
     )
     emb.add_field(
-        name="**`Cmds`** [`.cmds`]",
+        name="**`Commands`** [`.cmds`]",
         value="Show this help menu.",
         inline=False
     )
     emb.add_field(
-        name="**`DB`** [`.db`]",
+        name="**`Database`** [`.db`]",
         value="Database commands: `status`, `clear` (owner only).",
         inline=False
     )
@@ -693,7 +693,7 @@ async def show_commands(ctx):
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
-    await ctx.send(embed=emb, mention_author=True)  # Fixed: use send, not reply
+    await ctx.send(embed=emb, mention_author=True)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
