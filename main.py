@@ -351,6 +351,7 @@ def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
 
     work = wrapper.replace("`", '"').replace(";", ",")
 
+    # Substitute arithmetic: ((a)+(b)) etc.
     patterns_arith = [
         (r'\(\((-?\d+\.?\d*)\)\+\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) + float(m.group(2)))),
         (r'\(\((-?\d+\.?\d*)\)\-\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) - float(m.group(2)))),
@@ -368,17 +369,18 @@ def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
                 work = new_work
                 changed = True
 
+    # After arithmetic, work should be a valid Python expression that evaluates to a string
+    # We'll use eval with a safe namespace that allows loadstring (dummy)
+    ns = {"loadstring": lambda x: x}
     try:
-        result_str = ast.literal_eval(work)
-    except Exception:
-        try:
-            result_str = ast.literal_eval(work)
-        except Exception as e:
-            return False, f"Failed to evaluate Galactic expression: {e}"
+        result_str = eval(work, {"__builtins__": {}}, ns)
+    except Exception as e:
+        return False, f"Failed to evaluate Galactic expression: {e}"
 
     if not isinstance(result_str, str):
         return False, "Evaluated result is not a string"
 
+    # Clean the string: remove loadstring(...), brackets, quotes
     cleaned = result_str
     cleaned = re.sub(r'^loadstring\(', '', cleaned)
     cleaned = re.sub(r'\)$', '', cleaned)
