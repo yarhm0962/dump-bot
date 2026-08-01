@@ -23,6 +23,7 @@ import threading
 import time
 import subprocess
 import tempfile
+import ast
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -311,74 +312,71 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-# ---------- Galactic Deobfuscator ----------
-GALACTIC_DEOBF_LUA = r"""
-local function DeobfuscateGalactic(source)
-    if not source or not source:find("This File Was Protected By Galactic Protection") then return nil end
-    local wrapper = source:match("return%(function%(%.-%)end%)%(%.%.%.%)") or source:match("return%(function%(%.-%)%)%(%.%.%.%)")
-    if not wrapper then return nil end
-    local work = wrapper:gsub("`", '"'):gsub(";", ",")
-    work = work:gsub("%((%-?%d+%.?%d*)%+%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)+tonumber(b) end)
-    work = work:gsub("%((%-?%d+%.?%d*)%-%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)-tonumber(b) end)
-    work = work:gsub("%((%-?%d+%.?%d*)%*%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)*tonumber(b) end)
-    work = work:gsub("%((%-?%d+%.?%d*)%/%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)/tonumber(b) end)
-    work = work:gsub("%((%-?%d+%.?%d*)%%%((%-?%d+%.?%d*)%)", function(a,b) return tonumber(a)%tonumber(b) end)
-    local ok, res = pcall(loadstring or load, "return "..work)
-    if not ok or type(res)~="string" then return nil end
-    local out = res:gsub("^loadstring%(", ""):gsub("%)$", ""):gsub("^%[==%[", ""):gsub("%]==%]$", ""):gsub("^[\"']", ""):gsub("[\"']$", "")
-    return out
-end
+# ---------- Galactic Deobfuscator (Python) ----------
+def deobfuscate_galactic_python(source: str) -> tuple[bool, str]:
+    if not source or not source.find("This File Was Protected By Galactic Protection"):
+        return False, "Not a valid Galactic protected script"
 
-local file = io.open(arg[1], "r")
-if not file then print("ERROR: Cannot read input file") os.exit(1) end
-local source = file:read("*a")
-file:close()
+    # Extract the wrapper: return(function(...) ... end)(...)
+    wrapper = re.search(r'return\(function\(%.-%\)end\)\(%.%.%.\)', source) or re.search(r'return\(function\(%.-%\)\)\(%.%.%.\)', source)
+    if not wrapper:
+        return False, "Could not extract Galactic wrapper"
 
-local result = DeobfuscateGalactic(source)
-if not result then
-    print("ERROR: Not a valid Galactic protected script")
-    os.exit(1)
-end
+    work = wrapper.group(0)
+    work = work.replace("`", '"').replace(";", ",")
 
-local out = io.open(arg[2], "w")
-if not out then print("ERROR: Cannot write output") os.exit(1) end
-out:write(result)
-out:close()
-print("SUCCESS")
-"""
+    # Perform arithmetic substitutions iteratively
+    def compute_arith(match):
+        op = match.group(0)
+        # Patterns: ((num)+(num)), ((num)-(num)), ((num)*(num)), ((num)/(num)), ((num)%(num))
+        # Extract numbers and operator
+        # We'll match the inner parts separately
+        inner = match.group(0)[1:-1]  # remove outer parentheses? Actually we need to extract numbers
+        # Better: use groups from the regex
+        # We'll re-apply regex to each match to get a,b,op
+        return ""
 
-async def deobfuscate_galactic_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
+    # We'll use a loop with regex substitutions for each operator
+    patterns = [
+        (r'\(\((-?\d+\.?\d*)\)\+\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) + float(m.group(2)))),
+        (r'\(\((-?\d+\.?\d*)\)\-\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) - float(m.group(2)))),
+        (r'\(\((-?\d+\.?\d*)\)\*\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) * float(m.group(2)))),
+        (r'\(\((-?\d+\.?\d*)\)\/\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) / float(m.group(2)))),
+        (r'\(\((-?\d+\.?\d*)\)\%\((-?\d+\.?\d*)\)\)', lambda m: str(float(m.group(1)) % float(m.group(2)))),
+    ]
 
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(GALACTIC_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
+    changed = True
+    while changed:
+        changed = False
+        for pat, repl in patterns:
+            new_work, count = re.subn(pat, repl, work)
+            if count:
+                work = new_work
+                changed = True
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
+    # Now work should be a string literal like "loadstring([==[ ... ]==])"
+    # Use ast.literal_eval to get the string
+    try:
+        # First try to evaluate as a literal
+        result_str = ast.literal_eval(work)
+    except:
+        # If that fails, try to evaluate the expression (maybe it's a concatenation)
+        # But Galactic typically produces a single literal
+        return False, "Failed to evaluate Galactic expression"
+
+    if not isinstance(result_str, str):
+        return False, "Evaluated result is not a string"
+
+    # Clean the string: remove loadstring(...), brackets, quotes
+    cleaned = result_str
+    cleaned = re.sub(r'^loadstring\(', '', cleaned)
+    cleaned = re.sub(r'\)$', '', cleaned)
+    cleaned = re.sub(r'^\[==\[', '', cleaned)
+    cleaned = re.sub(r'\]==\]$', '', cleaned)
+    cleaned = re.sub(r'^["\']', '', cleaned)
+    cleaned = re.sub(r'["\']$', '', cleaned)
+
+    return True, cleaned
 
 # ---------- WeAreDevs Deobfuscator ----------
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
@@ -797,7 +795,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Galactic Deobf [.galactic]`",
-        value="Deobfuscate Galactic Protection obfuscated scripts.",
+        value="Deobfuscate Galactic Protection obfuscated scripts (pure Python).",
         inline=False
     )
     emb.add_field(
@@ -833,16 +831,15 @@ async def galactic_command(ctx, *, link=None):
 
     proc = await ctx.reply(f"🔓 Deobfuscating Galactic {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = await deobfuscate_galactic_lua(content)
+        success, result = deobfuscate_galactic_python(content)
         if not success:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Deobfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
             return
 
-        # Build report for Galactic
         report = {
             "obfuscator": {"name": "Galactic Protection", "confidence": 100},
-            "steps": ["• Deobfuscated using Galactic Lua function"],
+            "steps": ["• Deobfuscated using Python Galactic deobfuscator"],
             "layers_reached": 1,
             "max_layers": 1,
             "anti_found": [],
