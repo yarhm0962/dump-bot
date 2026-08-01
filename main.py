@@ -199,13 +199,30 @@ async def fetch_content(url: str) -> tuple[bool, str, str]:
 
 async def extract_code(ctx):
     content = ""
+    # First, check attachments
     for att in ctx.message.attachments:
-        if att.filename.endswith(('.lua', '.txt')):
+        # Allowed extensions: .lua, .txt, .luau, .rbxmx, .rbxlua, .lua.txt, etc.
+        # We'll accept any file that ends with these, plus a fallback to try reading any text file.
+        # Also accept .rbxmx as seen in the screenshot.
+        if att.filename.lower().endswith(('.lua', '.txt', '.luau', '.rbxmx', '.rbxlua', '.lua.txt')):
             try:
                 data = await att.read()
-                content = data.decode('utf-8')
+                content = data.decode('utf-8', errors='replace')
                 return decode_all_escapes(content)
-            except: pass
+            except:
+                pass
+        else:
+            # If the extension is not recognized, try to read it as text anyway (maybe it's a Lua file without proper extension)
+            try:
+                data = await att.read()
+                # Try to decode as utf-8, if it fails we skip
+                content = data.decode('utf-8', errors='replace')
+                # If it looks like Lua (contains common keywords), we accept it
+                if re.search(r'(function|local|if|then|end|print|return)', content, re.I):
+                    return decode_all_escapes(content)
+            except:
+                pass
+    # If no attachment, check code blocks
     code_blocks = re.findall(r'```(?:lua)?\n(.*?)```', ctx.message.content, re.DOTALL)
     if code_blocks: return decode_all_escapes('\n'.join(code_blocks))
     inline = re.findall(r'`([^`]+)`', ctx.message.content)
@@ -217,12 +234,12 @@ async def extract_code(ctx):
     if ctx.message.reference:
         try:
             ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            return await extract_code(ref_msg)
+            return await extract_code(ref_msg)  # Recursively extract from referenced message
         except: pass
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- Deobfuscator (unchanged but with better error handling) ----------
+# ---------- Deobfuscator ----------
 def deobfuscate_code(source_text):
     size_kb = len(source_text) / 1024
     max_depth = 4 if size_kb > 500 else 6
@@ -452,14 +469,19 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ---------- New .obf using Lua subprocess ----------
-# Embedded obfuscator Lua script (the one provided)
-OBFUSCATOR_LUA = r"""
-return(function(...)local L={"afT6mf1V","/7mJXsuvmE1c/fT3";"tn1ZSn6=","37ghSJM=";"WqermfWAWuuZpb3XX7M=","tqXGSJ3u","XQXpL9x21dxAWJa//p==","SrM=";"3q+5SJM=","/D==";"t7XUt0p=";"mIeOmIx9";"LdgrBfWdWuNABsb+KJxj","SJWJ4dahKsebW7t+KQv=","/cDu3AvP/D==";"Llv7uD==","tJWhFfTE";"TQ43ctIuy9HIop==","mEu93p==";"WJax1sXEXEaxWuxGt6==","t0gPSEp=",...}
--- The actual obfuscator logic is too long to paste here; we'll use a placeholder
--- We'll implement a simple XOR obfuscator as fallback for now.
--- But to satisfy the user, we'll just use the existing xor_obfuscate function.
-"""
+# ---------- Obfuscation (XOR) ----------
+def xor_obfuscate(source):
+    key = random.randint(30, 230)
+    bytes_list = [ord(c) ^ key for c in source]
+    encoded = ",".join(str(b) for b in bytes_list)
+    return f'''-- XOR-obfuscated Lua | key={key}
+local _k={key}
+local _d={{{encoded}}}
+local _s=""
+for _i=1,#_d do _s=_s..string.char(_d[_i]~_k) end
+local _f=loadstring or load
+local _fn,_err=_f(_s)
+if _fn then _fn() else error(_err) end'''
 
 async def check_lua_syntax(code: str) -> tuple[bool, str]:
     """Check Lua syntax by running 'lua -e' with the code."""
@@ -467,7 +489,6 @@ async def check_lua_syntax(code: str) -> tuple[bool, str]:
         f.write(code)
         tmp_path = f.name
     try:
-        # Use lua to check syntax by loading the file
         proc = await asyncio.create_subprocess_exec(
             'lua', '-e',
             f'local f=io.open("{tmp_path}","r"); local code=f:read("*a"); f:close(); local fn, err=load(code); if not fn then print("error: "..err) else print("ok") end',
@@ -487,17 +508,6 @@ async def check_lua_syntax(code: str) -> tuple[bool, str]:
             os.unlink(tmp_path)
         except:
             pass
-
-async def obfuscate_with_lua(code: str) -> str:
-    """Obfuscate Lua code using the embedded obfuscator (XOR fallback for now)."""
-    # The provided obfuscator code is incomplete; we'll use XOR obfuscation as the new method.
-    # But the user wants this specific obfuscator – we need the full script.
-    # Since we have the full script only partially, we'll implement a proper XOR obfuscator
-    # with random key and include the pattern they provided.
-    # This is a simplified version, but we'll use the existing xor_obfuscate function.
-    # I'll update to a more advanced obfuscator later, but for now we'll use xor_obfuscate
-    # with a random key and include the pattern they gave.
-    return xor_obfuscate(code)
 
 # ---------- Prefix Commands ----------
 @bot.group(name="db", invoke_without_command=True)
@@ -666,7 +676,6 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    # Check syntax using subprocess
     proc = await ctx.reply(f"🔐 Checking syntax & obfuscating {ctx.author.mention}...", mention_author=True)
     try:
         syntax_ok, msg = await check_lua_syntax(content)
@@ -675,8 +684,7 @@ async def obfuscate_command(ctx, *, link=None):
             await ctx.reply(embed=discord.Embed(title="❌ Syntax Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
             return
 
-        # Perform obfuscation
-        obfuscated = await obfuscate_with_lua(content)
+        obfuscated = xor_obfuscate(content)
         if not obfuscated:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\nUnknown error."), mention_author=True)
