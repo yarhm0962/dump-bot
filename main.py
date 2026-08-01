@@ -227,7 +227,6 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ---------- Prometheus Deobfuscator (Lua) ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -551,19 +550,16 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
         snippets = deobf.get("snippets", [])
         content = deobf["result"]
 
-        # Decide what to show as preview
         if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
-            # We successfully unpacked – show 30% of deobfuscated code
             preview_len = int(len(content) * 0.3)
-            preview_len = min(preview_len, 500)  # Cap at 500
+            preview_len = min(preview_len, 500)
             if preview_len < 50:
-                preview_len = min(150, len(content))  # At least show something
+                preview_len = min(150, len(content))
             preview = content[:preview_len]
             if len(content) > preview_len:
                 preview += "... [truncated]"
             desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
         else:
-            # Couldn't unpack – show the protection snippets
             if snippets:
                 desc += "\n**Protection Snippets (raw obfuscator code):**\n```lua\n"
                 snippet_text = ""
@@ -582,7 +578,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
         emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Empty result")
         return emb, None
 
-    # File handling: if content exists and is not empty
     if not content or len(content) < 5:
         emb = discord.Embed(title=title, color=0xe74c3c, description=desc+"\n❌ No usable code")
         return emb, None
@@ -592,14 +587,12 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     file = None
     if size_kb > 10 or len(content) > 1800:
         file = File(io.BytesIO(size_b), filename="processed.lua")
-        # Ensure description isn't too long
         if len(desc) > 5000:
             desc = desc[:5000] + "... [truncated description]"
         if not desc.endswith("Full code sent as file"):
             desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
         emb = discord.Embed(title=title, color=0x3498db, description=desc)
     else:
-        # For small content, show full code preview
         preview = content[:1500] + ("..." if len(content) > 1500 else "")
         desc += f"\n\n**Full Deobfuscated Code:**\n```lua\n{preview}\n```"
         emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
@@ -663,15 +656,42 @@ async def db_clear(ctx):
 @bot.command(name="cmds")
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
-    emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}\nCommands:")
-    emb.add_field(name="`.l <link/loadstring/code>`", value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).", inline=False)
-    emb.add_field(name="`.get <link/loadstring>`", value="Fetch and decode raw source from URL or attachment.", inline=False)
-    emb.add_field(name="`.env <link/loadstring>`", value="Bypass anti-env checks and unpack the script.", inline=False)
-    emb.add_field(name="`.obf <link/loadstring/code>`", value="Obfuscate Lua code using Prometheus (XOR base64).", inline=False)
-    emb.add_field(name="`.cmds`", value="Show this help menu.", inline=False)
-    emb.add_field(name="`.db status / clear`", value="Check DB connection or clear logs (owner only).", inline=False)
-    emb.add_field(name="`/ping`", value="Check bot latency (slash command).", inline=False)
-    emb.add_field(name="`/channel_set / view / clear`", value="Restrict commands to a specific channel (admins).", inline=False)
+    emb = discord.Embed(title="RblXLua Tool Commands", color=0x9b59b6, description=f"Hello {ctx.author.mention}")
+    emb.add_field(
+        name="**`Lua`** [`.l`]",
+        value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
+        inline=False
+    )
+    emb.add_field(
+        name="**`Get`** [`.get`]",
+        value="Fetch and decode raw source from URL or attachment.",
+        inline=False
+    )
+    emb.add_field(
+        name="**`Env Logger`** [`.env`]",
+        value="Bypass anti-env checks and unpack the script.",
+        inline=False
+    )
+    emb.add_field(
+        name="**`Obf`** [`.obf`]",
+        value="Obfuscate Lua code using Prometheus (XOR base64).",
+        inline=False
+    )
+    emb.add_field(
+        name="**`Cmds`** [`.cmds`]",
+        value="Show this help menu.",
+        inline=False
+    )
+    emb.add_field(
+        name="**`DB`** [`.db`]",
+        value="Database commands: `status`, `clear` (owner only).",
+        inline=False
+    )
+    emb.add_field(
+        name="**Slash Commands**",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction",
+        inline=False
+    )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.reply(embed=emb, mention_author=True)
 
@@ -691,7 +711,6 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
-        # Try Prometheus first
         success, result = await deobfuscate_prometheus_lua(content)
         if success:
             report = {
@@ -714,7 +733,6 @@ async def deobf_command(ctx, *, link=None):
                 logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
-        # Try WeAreDevs
         success, result = deobfuscate_wearedevs(content)
         if success:
             report = {
@@ -737,7 +755,6 @@ async def deobf_command(ctx, *, link=None):
                 logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
-        # Fallback to enhanced Python deobfuscator
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
