@@ -23,6 +23,7 @@ import threading
 import time
 import subprocess
 import tempfile
+from urllib.parse import urlparse, parse_qs
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -658,6 +659,144 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
+# ---------- NEW: Full Bypass Function ----------
+async def full_bypass(url: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Referer": "https://delta-executor.com/"
+    }
+    current_url = url
+    content = ""
+    delta_key = None
+
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=25), follow_redirects=False) as session:
+        try:
+            for _ in range(15):
+                async with session.get(current_url) as resp:
+                    if resp.status in {301,302,303,307,308}:
+                        loc = resp.headers.get("Location")
+                        if loc:
+                            if not loc.startswith("http"):
+                                base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+                                current_url = base + loc
+                            else:
+                                current_url = loc
+                            continue
+                    text = await resp.text()
+                    patterns = [
+                        r'window\.location\.replace\(["\']([^"\']+)["\']',
+                        r'window\.location\s*=\s*["\']([^"\']+)["\']',
+                        r'<meta[^>]+content=["\']\d+;url=([^"\'>]+)',
+                        r'action=["\']([^"\']+)["\']'
+                    ]
+                    found_next = None
+                    for pat in patterns:
+                        m = re.search(pat, text, re.I)
+                        if m:
+                            found_next = m.group(1)
+                            break
+                    if found_next:
+                        if not found_next.startswith("http"):
+                            base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+                            current_url = base + found_next
+                        else:
+                            current_url = found_next
+                        continue
+                    content = text
+                    break
+
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query)
+            hwid = qs.get("HWID", [qs.get("hwid", [None])[0]])[0]
+            if hwid:
+                api_endpoints = [
+                    f"https://api-gateway.platoboost.com/v1/authenticators/8/{hwid}",
+                    f"https://api.delta-executor.com/v1/key?hwid={hwid}"
+                ]
+                for ep in api_endpoints:
+                    try:
+                        async with session.get(ep) as kr:
+                            if kr.status == 200:
+                                jdata = await kr.json()
+                                for field in ["key", "license", "delta_key", "access_key"]:
+                                    if field in jdata:
+                                        delta_key = str(jdata[field])
+                                        break
+                                if delta_key: break
+                    except:
+                        continue
+
+            key_matches = re.findall(r'\b[A-Z0-9a-z_]{16,}\b', content)
+            if not delta_key and key_matches:
+                delta_key = key_matches[0]
+
+            return {
+                "ok": True,
+                "final_url": current_url,
+                "delta_key": delta_key,
+                "main_text": re.sub(r'<[^>]+>', '', content).strip()
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+# ---------- Slash Command: /bypass ----------
+@bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
+@app_commands.describe(url="The Delta Executor URL to bypass")
+async def slash_bypass(interaction: discord.Interaction, url: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        result = await full_bypass(url)
+        if not result["ok"]:
+            embed = discord.Embed(
+                title="❌ Bypass Failed",
+                description=f"An error occurred:\n```{result.get('error', 'Unknown error')}```",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        delta_key = result.get("delta_key")
+        if delta_key:
+            key_display = f"`{delta_key}`"
+        else:
+            key_display = "No key found"
+
+        embed = discord.Embed(
+            title="🔓 Bypass Complete",
+            description=f"**Final URL:** {result['final_url']}\n\n**Delta Key:** {key_display}",
+            color=0x3498db
+        )
+        embed.add_field(
+            name="Page Preview",
+            value=result["main_text"][:500] + ("..." if len(result["main_text"]) > 500 else ""),
+            inline=False
+        )
+
+        view = discord.ui.View()
+        copy_button = discord.ui.Button(
+            style=discord.ButtonStyle.primary,
+            label="Copy",
+            emoji="📋",
+            custom_id="copy_delta_key"
+        )
+        async def copy_button_callback(interaction: discord.Interaction):
+            if not delta_key:
+                await interaction.response.send_message("No key to copy.", ephemeral=True)
+                return
+            await interaction.response.send_message(f"📋 Delta Key:\n```{delta_key}```", ephemeral=True)
+        copy_button.callback = copy_button_callback
+        view.add_item(copy_button)
+
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error",
+            description=f"An unexpected error occurred:\n```{str(e)}```",
+            color=0xe74c3c
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -666,7 +805,7 @@ async def on_ready():
         print("✅ Slash commands synced globally")
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_*"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /bypass"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -737,7 +876,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/bypass` - Bypass Delta Executor URL and extract key",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
