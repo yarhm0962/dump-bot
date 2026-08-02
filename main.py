@@ -945,8 +945,8 @@ class TicketView(discord.ui.View):
         if panel.get("claim_enabled", False):
             claim_button = discord.ui.Button(
                 label="Claim",
-                style=discord.ButtonStyle.blurple,
-                emoji="🖐️",
+                style=discord.ButtonStyle.gray,
+                emoji="📜",
                 custom_id=f"claim_ticket:{ticket_id}"
             )
             claim_button.callback = self.claim_callback
@@ -1059,6 +1059,22 @@ class TicketView(discord.ui.View):
             await channel.delete(reason=f"Ticket closed by {interaction.user}")
 
         tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
+
+        # Send DM to ticket creator
+        creator = interaction.guild.get_member(ticket["user_id"])
+        if creator:
+            try:
+                embed_dm = discord.Embed(
+                    title="Ticket has been closed",
+                    description=f"This ticket has been closed by {interaction.user.display_name}.",
+                    color=0x2b2d31
+                )
+                embed_dm.add_field(name="Ticket name", value=f"`ticket-{creator.name}`", inline=False)
+                embed_dm.add_field(name="Server", value=interaction.guild.name, inline=False)
+                embed_dm.set_footer(text="MonLua Bot")
+                await creator.send(embed=embed_dm)
+            except:
+                pass
 
         await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
 
@@ -1240,6 +1256,7 @@ async def show_commands(ctx):
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.send(embed=emb, mention_author=True)
 
+# Prefix commands (.l, .get, .env, .obf) - unchanged
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
