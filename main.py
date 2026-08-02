@@ -891,9 +891,13 @@ class PersistentTicketPanel(discord.ui.View):
 
         await channel.edit(overwrites=overwrites)
 
+        if ping_role_ids:
+            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
+            await channel.send(mention_text)
+
         embed_ticket = discord.Embed(
             title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a New Ticket 🎟️.\n\n**Ping Roles:** " + " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else "",
+            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
             color=panel.get("color", 0x2b2d31)
         )
         embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
