@@ -930,7 +930,7 @@ class PersistentTicketPanel(discord.ui.View):
         await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
 
 class TicketView(discord.ui.View):
-    def __init__(self, ticket_id, panel):
+    def __init__(self, ticket_id, panel, claim_disabled=False):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
         self.panel = panel
@@ -949,7 +949,8 @@ class TicketView(discord.ui.View):
                 label="Claim",
                 style=discord.ButtonStyle.gray,
                 emoji="📜",
-                custom_id=f"claim_ticket:{ticket_id}"
+                custom_id=f"claim_ticket:{ticket_id}",
+                disabled=claim_disabled
             )
             claim_button.callback = self.claim_callback
             self.add_item(claim_button)
@@ -991,8 +992,8 @@ class TicketView(discord.ui.View):
 
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
-            creator = interaction.guild.get_member(ticket["user_id"])
-            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {creator.mention if creator else 'User not found'}")
+            creator_mention = f"<@{ticket['user_id']}>"
+            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {creator_mention}")
 
             try:
                 async for msg in channel.history(limit=10):
@@ -1006,7 +1007,7 @@ class TicketView(discord.ui.View):
             except:
                 pass
 
-            new_view = TicketView(ticket_id, panel)
+            new_view = TicketView(ticket_id, panel, claim_disabled=True)
             new_view.clear_items()
             close_button = discord.ui.Button(
                 label="Close",
@@ -1016,6 +1017,16 @@ class TicketView(discord.ui.View):
             )
             close_button.callback = new_view.close_callback
             new_view.add_item(close_button)
+            if panel.get("claim_enabled", False):
+                claim_button = discord.ui.Button(
+                    label="Claim",
+                    style=discord.ButtonStyle.gray,
+                    emoji="📜",
+                    custom_id=f"claim_ticket:{ticket_id}",
+                    disabled=True
+                )
+                claim_button.callback = new_view.claim_callback
+                new_view.add_item(claim_button)
             try:
                 async for msg in channel.history(limit=10):
                     if msg.author == bot.user and msg.components:
