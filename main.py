@@ -828,7 +828,6 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ---------- Ticket System ----------
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
         super().__init__(timeout=None)
@@ -879,24 +878,26 @@ class PersistentTicketPanel(discord.ui.View):
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
         }
         ping_role_ids = []
-        for i in range(1, 5):
-            role_id = panel.get(f"ping_role_{i}")
-            if role_id:
-                role = guild.get_role(role_id)
-                if role:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                    ping_role_ids.append(role_id)
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+        for rid in ping_role_ids:
+            role = guild.get_role(rid)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
         await channel.edit(overwrites=overwrites)
 
-        # Send role ping as plain text
         if ping_role_ids:
             mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
             await channel.send(mention_text)
 
         embed_ticket = discord.Embed(
             title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a new **🎟️ Create Ticket** ticket.",
+            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
             color=panel.get("color", 0x2b2d31)
         )
         embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
@@ -966,7 +967,9 @@ class TicketView(discord.ui.View):
             return
 
         ping_role_ids = []
-        for i in range(1, 5):
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
             rid = panel.get(f"ping_role_{i}")
             if rid:
                 ping_role_ids.append(rid)
@@ -1041,7 +1044,9 @@ class TicketView(discord.ui.View):
             return
 
         ping_role_ids = []
-        for i in range(1, 5):
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
             rid = panel.get(f"ping_role_{i}")
             if rid:
                 ping_role_ids.append(rid)
@@ -1256,7 +1261,6 @@ async def show_commands(ctx):
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.send(embed=emb, mention_author=True)
 
-# prefix commands remain unchanged (we keep them for completeness)
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
