@@ -828,7 +828,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ---------- Ticket System (Fixed) ----------
+# ---------- Ticket System ----------
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
         super().__init__(timeout=None)
