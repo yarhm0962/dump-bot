@@ -662,16 +662,17 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
 async def full_bypass(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,*/*",
-        "Referer": "https://delta-executor.com/"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://delta-executor.com/",
+        "Accept-Language": "en-US,en;q=0.9"
     }
     current_url = url
     content = ""
     delta_key = None
 
-    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as session:
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=40)) as session:
         try:
-            for _ in range(15):
+            for attempt in range(20):
                 async with session.get(current_url, allow_redirects=False) as resp:
                     if resp.status in {301,302,303,307,308}:
                         loc = resp.headers.get("Location")
@@ -681,16 +682,20 @@ async def full_bypass(url: str):
                                 current_url = base + loc
                             else:
                                 current_url = loc
+                            await asyncio.sleep(0.4)
                             continue
+                    
                     text = await resp.text()
-                    patterns = [
+                    
+                    next_patterns = [
                         r'window\.location\.replace\(["\']([^"\']+)["\']',
-                        r'window\.location\s*=\s*["\']([^"\']+)["\']',
+                        r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
                         r'<meta[^>]+content=["\']\d+;url=([^"\'>]+)',
-                        r'action=["\']([^"\']+)["\']'
+                        r'action=["\']([^"\']+?)["\']',
+                        r'fetch\(["\']([^"\']+key[^"\']+)["\']'
                     ]
                     found_next = None
-                    for pat in patterns:
+                    for pat in next_patterns:
                         m = re.search(pat, text, re.I)
                         if m:
                             found_next = m.group(1)
@@ -701,7 +706,9 @@ async def full_bypass(url: str):
                             current_url = base + found_next
                         else:
                             current_url = found_next
+                        await asyncio.sleep(0.7)
                         continue
+                    
                     content = text
                     break
 
@@ -718,9 +725,9 @@ async def full_bypass(url: str):
                         async with session.get(ep) as kr:
                             if kr.status == 200:
                                 jdata = await kr.json()
-                                for field in ["key", "license", "delta_key", "access_key", "result", "token"]:
+                                for field in ["key", "licenseKey", "deltaKey", "access_key", "result", "token"]:
                                     val = str(jdata.get(field, ""))
-                                    if val and len(val) >= 20 and not "cloudflare" in val.lower():
+                                    if val and len(val) >= 30:
                                         delta_key = val
                                         break
                                 if delta_key: break
@@ -728,15 +735,20 @@ async def full_bypass(url: str):
                         continue
 
             if not delta_key:
-                key_patterns = [
-                    r'FREE_[A-Za-z0-9]{28,}',
-                    r'[A-Z0-9a-z_]{8,}-[A-Z0-9a-z_]{4,}-[A-Z0-9a-z_]{4,}-[A-Z0-9a-z_]{12,}',
-                    r'\b[A-Z0-9a-z]{32,}\b'
+                valid_key_patterns = [
+                    r'FREE_[A-Za-z0-9]{30,}',
+                    r'PREMIUM_[A-Za-z0-9]{30,}',
+                    r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+                    r'\b[A-Fa-f0-9]{64}\b',
+                    r'\b[A-Za-z0-9+/=]{40,}\b'
                 ]
-                for pat in key_patterns:
+                bad_terms = ["cloudflare", "insights", "analytics", "static", "cdn", "script", "css", "js", "image"]
+                
+                for pat in valid_key_patterns:
                     matches = re.findall(pat, content)
                     for match in matches:
-                        if "cloudflare" not in match.lower() and "insights" not in match.lower() and len(match) >= 24:
+                        match_lower = match.lower()
+                        if not any(term in match_lower for term in bad_terms) and len(match) >= 32:
                             delta_key = match
                             break
                     if delta_key: break
@@ -745,7 +757,7 @@ async def full_bypass(url: str):
                 "ok": True,
                 "final_url": current_url,
                 "delta_key": delta_key,
-                "main_text": re.sub(r'<[^>]+>', '', content).strip()
+                "main_text": re.sub(r'<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<[^>]+>', '', content).strip()
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
