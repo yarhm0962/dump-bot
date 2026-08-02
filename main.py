@@ -303,22 +303,8 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
 
 def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
     try:
-        chunk_size = random.randint(20, 50)
-        chunks = []
-        for i in range(0, len(code), chunk_size):
-            chunk = code[i:i+chunk_size]
-            b64 = base64.b64encode(chunk.encode('utf-8')).decode('ascii')
-            chunks.append(b64)
-
-        obfuscated = '''return(function(...)local L={'''
-
-        for i, chunk in enumerate(chunks):
-            if i > 0:
-                obfuscated += ';'
-            obfuscated += f'"{chunk}"'
-
-        obfuscated += ''';
-local function b64dec(data)
+        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = data:gsub('[^'..b..'=]', '')
     return (data:gsub('.', function(x)
@@ -333,16 +319,10 @@ local function b64dec(data)
         return string.char(c)
     end))
 end
-local output = {}
-for _,chunk in ipairs(L) do
-    local ok, res = pcall(b64dec, chunk)
-    if ok and res then table.insert(output, res) end
-end
-local raw = table.concat(output)
+local raw = b64dec(L)
 local fn = loadstring and loadstring(raw) or load(raw)
 if fn then fn() else error("Failed to load obfuscated code") end
 end)(...)'''
-
         return True, obfuscated
     except Exception as e:
         return False, str(e)
@@ -742,7 +722,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Obfuscate [.obf]`",
-        value="Obfuscate Lua code using Prometheus (full format with chunking & base64).",
+        value="Obfuscate Lua code using Prometheus (single base64 chunk, stable).",
         inline=False
     )
     emb.add_field(
