@@ -659,6 +659,7 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
+# ---------- CORRECTED full_bypass ----------
 async def full_bypass(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -734,19 +735,20 @@ async def full_bypass(url: str):
             all_text = re.sub(r'\s+', ' ', all_text).strip()
 
             valid_key_patterns = [
-                r'FREE_[A-Za-z0-9]{30,}',
-                r'PREMIUM_[A-Za-z0-9]{30,}',
+                r'FREE_[A-Za-z0-9_]{25,}',
+                r'PREMIUM_[A-Za-z0-9_]{25,}',
                 r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+                r'\b[A-F0-9a-f]{32}\b',
                 r'\b[A-F0-9a-f]{64}\b'
             ]
-            bad_words = ["cloudflare", "insights", "analytics", "cdn", "v4513226", "sha256", "uuid"]
+            bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid"]
 
             for pat in valid_key_patterns:
                 matches = re.findall(pat, all_text)
                 for m in matches:
-                    if len(m) < 32:
+                    if len(m) < 28:
                         continue
-                    if any(b in m.lower() for b in bad_words):
+                    if any(bad in m.lower() for bad in bad_words):
                         continue
                     delta_key = m
                     break
@@ -764,10 +766,11 @@ async def full_bypass(url: str):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+# ---------- Slash Command: /bypass ----------
 @bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
 @app_commands.describe(url="The Delta Executor URL to bypass")
 async def slash_bypass(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
     try:
         result = await full_bypass(url)
         if not result["ok"]:
@@ -780,18 +783,17 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
             return
 
         delta_key = result.get("delta_key")
-        if delta_key:
-            key_display = f"`{delta_key}`"
-        else:
-            key_display = "No key found"
+        key_display = f"`{delta_key}`" if delta_key else "No key found"
 
         embed = discord.Embed(
-            title="🔓 Bypass Complete",
-            description=f"**Final URL:** {result['final_url']}\n\n**Delta Key:** {key_display}",
+            title="✅ **Bypass Complete — All Pages Processed**",
+            description=f"**Final URL:** {result['final_url']}\n\n**Extracted Key:** {key_display}",
             color=0x3498db
         )
-        if result.get("time_remaining"):
-            embed.add_field(name="⏱️ Time Remaining", value=result["time_remaining"], inline=False)
+
+        if result.get("is_delta_link") and result.get("time_remaining"):
+            embed.add_field(name="⏱️ Remaining Time", value=result["time_remaining"], inline=False)
+
         embed.add_field(
             name="Page Preview",
             value=result.get("clean_text", "No text extracted.")[:500] + ("..." if len(result.get("clean_text", "")) > 500 else ""),
@@ -801,7 +803,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         view = discord.ui.View()
         copy_button = discord.ui.Button(
             style=discord.ButtonStyle.primary,
-            label="Copy",
+            label="Copy Key",
             emoji="📋",
             custom_id="copy_delta_key"
         )
@@ -813,7 +815,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         copy_button.callback = copy_button_callback
         view.add_item(copy_button)
 
-        await interaction.followup.send(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     except Exception as e:
         embed = discord.Embed(
             title="❌ Error",
