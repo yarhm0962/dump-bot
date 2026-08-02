@@ -891,13 +891,9 @@ class PersistentTicketPanel(discord.ui.View):
 
         await channel.edit(overwrites=overwrites)
 
-        if ping_role_ids:
-            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
-            await channel.send(mention_text)
-
         embed_ticket = discord.Embed(
             title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
+            description=f"{interaction.user.mention} has created a New Ticket 🎟️.\n\n**Ping Roles:** " + " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else "",
             color=panel.get("color", 0x2b2d31)
         )
         embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
@@ -991,13 +987,8 @@ class TicketView(discord.ui.View):
 
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
-            embed = discord.Embed(
-                title="🖐️ Ticket Claimed",
-                description=f"An admin claimed your ticket: {interaction.user.mention}",
-                color=discord.Color.yellow()
-            )
-            await channel.send(embed=embed)
-            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {discord.utils.get(interaction.guild.members, id=ticket['user_id']).mention}")
+            creator = interaction.guild.get_member(ticket["user_id"])
+            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {creator.mention if creator else 'User not found'}")
 
             try:
                 async for msg in channel.history(limit=10):
@@ -1029,7 +1020,7 @@ class TicketView(discord.ui.View):
             except:
                 pass
 
-        await interaction.response.send_message("✅ You have claimed this ticket.", ephemeral=True)
+        await interaction.response.send_message("✅ Successfully Claimed the ticket", ephemeral=True)
 
     async def close_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
