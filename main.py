@@ -310,73 +310,21 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-PROMETHEUS_OBF_LUA = r"""
-local function obfuscate(code)
-    math.randomseed(os.time())
-    local key = math.random(30, 230)
-    local bytes = {}
-    for i = 1, #code do
-        local b = string.byte(code, i)
-        table.insert(bytes, tostring((b + key) % 256))
-    end
-    local encoded = table.concat(bytes, ",")
-    return string.format([[
---[[ OBFUSCATED BY PROMETHEUS 12.3 ]]
-local _k=%d
-local _d={%s}
-local _s=""
-for _i=1,#_d do _s=_s..string.char((_d[_i] - _k) %% 256) end
-local _fn = loadstring and loadstring(_s) or load(_s)
-if _fn then _fn() else error("Failed to load obfuscated code") end
-]], key, encoded)
-end
-
-local file = io.open(arg[1], "r")
-if not file then print("ERROR: Cannot read input file") os.exit(1) end
-local source = file:read("*a")
-file:close()
-
-local result = obfuscate(source)
-local out = io.open(arg[2], "w")
-if not out then print("ERROR: Cannot write output file") os.exit(1) end
-out:write(result)
-out:close()
-print("SUCCESS")
-"""
-
-async def obfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "obf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_OBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if "SUCCESS" in out:
-                if os.path.exists(output_path):
-                    with open(output_path, "r", encoding="utf-8") as f:
-                        result = f.read()
-                    return True, result
-            return False, "Obfuscation failed"
-        except asyncio.TimeoutError:
-            return False, "Obfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
+# ---------- PURE PYTHON OBFUSCATOR (no Lua needed) ----------
+def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
+    try:
+        key = random.randint(30, 230)
+        bytes_data = code.encode('utf-8')
+        obf_bytes = bytes([(b + key) % 256 for b in bytes_data])
+        b64 = base64.b64encode(obf_bytes).decode('ascii')
+        obfuscated = f'''--[[ OBFUSCATED BY PROMETHEUS 12.3 ]]
+local _k={key}
+local _d=("{b64}"):gsub(".", function(c) return string.char((c:byte() - _k) % 256) end)
+local _s=loadstring(_d)
+if _s then _s() else error("Failed to load") end'''
+        return True, obfuscated
+    except Exception as e:
+        return False, str(e)
 
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
@@ -773,7 +721,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Obfuscate [.obf]`",
-        value="Obfuscate Lua code using Prometheus (Lua engine - compatible with all executors).",
+        value="Obfuscate Lua code using Prometheus (pure Python – no Lua required).",
         inline=False
     )
     emb.add_field(
@@ -976,7 +924,8 @@ async def obfuscate_command(ctx, *, link=None):
 
     proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = await obfuscate_prometheus_lua(content)
+        # Use pure Python obfuscator – no Lua needed
+        success, result = obfuscate_prometheus_python(content)
         if not success:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
