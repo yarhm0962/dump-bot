@@ -889,6 +889,11 @@ class PersistentTicketPanel(discord.ui.View):
 
         await channel.edit(overwrites=overwrites)
 
+        # Send role ping as plain text
+        if ping_role_ids:
+            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
+            await channel.send(mention_text)
+
         embed_ticket = discord.Embed(
             title="🎟️ Ticket Created",
             description=f"{interaction.user.mention} has created a new **🎟️ Create Ticket** ticket.",
@@ -922,10 +927,6 @@ class PersistentTicketPanel(discord.ui.View):
         jump_view.add_item(jump_button)
 
         await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
-
-        if ping_role_ids:
-            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
-            await channel.send(f"📢 {mention_text}")
 
 class TicketView(discord.ui.View):
     def __init__(self, ticket_id, panel):
@@ -1060,7 +1061,6 @@ class TicketView(discord.ui.View):
 
         tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
 
-        # Send DM to ticket creator
         creator = interaction.guild.get_member(ticket["user_id"])
         if creator:
             try:
@@ -1069,7 +1069,7 @@ class TicketView(discord.ui.View):
                     description=f"This ticket has been closed by {interaction.user.display_name}.",
                     color=0x2b2d31
                 )
-                embed_dm.add_field(name="Ticket name", value=f"`ticket-{creator.name}`", inline=False)
+                embed_dm.add_field(name="Ticket name", value=f"ticket-{creator.name}", inline=False)
                 embed_dm.add_field(name="Server", value=interaction.guild.name, inline=False)
                 embed_dm.set_footer(text="MonLua Bot")
                 await creator.send(embed=embed_dm)
@@ -1107,7 +1107,7 @@ async def ticket_command(
     ping_role_3: discord.Role = None,
     ping_role_4: discord.Role = None
 ):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
 
     try:
         if color.startswith("#"):
@@ -1256,7 +1256,7 @@ async def show_commands(ctx):
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.send(embed=emb, mention_author=True)
 
-# Prefix commands (.l, .get, .env, .obf) - unchanged
+# prefix commands remain unchanged (we keep them for completeness)
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
