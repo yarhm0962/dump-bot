@@ -828,178 +828,129 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ---------- Ticket System ----------
-class TicketPanelView(discord.ui.View):
-    def __init__(self, panel_id):
-        super().__init__(timeout=None)
-        self.panel_id = panel_id
-
-    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.gray, emoji="🎟️", custom_id="open_ticket")
-    async def open_ticket_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Retrieve panel config
-        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
-        if not panel:
-            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
-            return
-
-        # Check if user already has an open ticket in this guild
-        existing = tickets_col.find_one({
-            "guild_id": interaction.guild.id,
-            "user_id": interaction.user.id,
-            "closed": False
-        })
-        if existing:
-            await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
-            return
-
-        # Create ticket channel
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if not category:
-            category = await guild.create_category("Tickets")
-
-        # Create channel
-        channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}",
-            category=category,
-            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
-        )
-
-        # Set permissions: deny @everyone, allow user, allow bot, allow ping roles
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
-        }
-        # Add ping roles
-        ping_role_ids = []
-        for i in range(1, 5):
-            role_id = panel.get(f"ping_role_{i}")
-            if role_id:
-                role = guild.get_role(role_id)
-                if role:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                    ping_role_ids.append(role_id)
-
-        await channel.edit(overwrites=overwrites)
-
-        # Create ticket embed
-        embed = discord.Embed(
-            title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a new **🎟️ Create Ticket** ticket.",
-            color=panel.get("color", 0x2b2d31)
-        )
-        embed.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
-
-        # Send close/claim buttons
-        ticket_view = TicketView(ticket_id=None, panel=panel)
-        # We'll generate a ticket id and store in DB later; we need to create ticket doc first
-        ticket_doc = {
-            "guild_id": guild.id,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "claimed_by": None,
-            "closed": False,
-            "created_at": datetime.utcnow(),
-            "panel_id": self.panel_id
-        }
-        result = tickets_col.insert_one(ticket_doc)
-        ticket_id = str(result.inserted_id)
-        ticket_view.ticket_id = ticket_id
-
-        # Update ticket doc with ticket_id if needed (it's already there)
-        tickets_col.update_one({"_id": result.inserted_id}, {"$set": {"ticket_id": ticket_id}})
-
-        # Send message in ticket channel with embed and buttons
-        await channel.send(embed=embed, view=ticket_view)
-
-        # Send ephemeral response to user with jump button
-        jump_view = discord.ui.View()
-        jump_button = discord.ui.Button(
-            label="Go to Ticket",
-            style=discord.ButtonStyle.primary,
-            url=channel.jump_url
-        )
-        jump_view.add_item(jump_button)
-
-        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
-
-        # Ping the roles in the ticket channel
-        if ping_role_ids:
-            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
-            await channel.send(f"📢 {mention_text}")
-
 class TicketView(discord.ui.View):
     def __init__(self, ticket_id, panel):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
         self.panel = panel
         self.claim_enabled = panel.get("claim_enabled", False)
+        self.add_item(discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.danger,
+            emoji="🔒",
+            custom_id=f"close_ticket:{ticket_id}"
+        ))
         if self.claim_enabled:
-            self.add_item(discord.ui.Button(label="Claim", style=discord.ButtonStyle.blurple, emoji="🖐️", custom_id=f"claim_ticket:{ticket_id}"))
-        self.add_item(discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id=f"close_ticket:{ticket_id}"))
+            self.add_item(discord.ui.Button(
+                label="Claim",
+                style=discord.ButtonStyle.blurple,
+                emoji="🖐️",
+                custom_id=f"claim_ticket:{ticket_id}"
+            ))
 
     @discord.ui.button(label="Claim", style=discord.ButtonStyle.blurple, emoji="🖐️", custom_id="claim_ticket")
-    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Custom_id includes ticket_id, but we'll parse from button.custom_id
+    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         ticket_id = button.custom_id.split(":")[1]
         ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+            return
+
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
+            return
+
+        ping_role_ids = []
+        for i in range(1, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission:
+            await interaction.response.send_message("❌ You are not able to claim this ticket. Only admins with the configured ping roles can claim.", ephemeral=True)
             return
 
         if ticket.get("claimed_by"):
             await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
             return
 
-        # Claim ticket
         tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
 
-        # Update embed in ticket channel
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
-            # Fetch the latest message with embed and update it
-            async for msg in channel.history(limit=10):
-                if msg.author == bot.user and msg.embeds:
-                    embed = msg.embeds[0]
-                    new_embed = discord.Embed.from_dict(embed.to_dict())
-                    new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
-                    await msg.edit(embed=new_embed)
-                    break
+            embed = discord.Embed(
+                title="🖐️ Ticket Claimed",
+                description=f"An admin claimed your ticket: {interaction.user.mention}",
+                color=discord.Color.yellow()
+            )
+            await channel.send(embed=embed)
+            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {discord.utils.get(interaction.guild.members, id=ticket['user_id']).mention}")
 
-        # Disable claim button (remove from view)
-        # We need to update the view. We'll get the message and edit the view.
-        # We'll just remove the claim button by editing the message with a new view.
-        if channel:
-            async for msg in channel.history(limit=10):
-                if msg.author == bot.user and msg.components:
-                    # Create a new view without the claim button
-                    new_view = TicketView(ticket_id, self.panel)
-                    new_view.claim_enabled = False
-                    # The close button is already in the view; we need to ensure we don't double-add
-                    # We'll recreate without claim button
-                    new_view.clear_items()
-                    new_view.add_item(discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id=f"close_ticket:{ticket_id}"))
-                    await msg.edit(view=new_view)
-                    break
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.embeds:
+                        embed_obj = msg.embeds[0]
+                        if embed_obj.title == "🎟️ Ticket Created":
+                            new_embed = discord.Embed.from_dict(embed_obj.to_dict())
+                            new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
+                            await msg.edit(embed=new_embed)
+                            break
+            except:
+                pass
+
+            new_view = TicketView(ticket_id, panel)
+            new_view.claim_enabled = False
+            new_view.clear_items()
+            new_view.add_item(discord.ui.Button(
+                label="Close",
+                style=discord.ButtonStyle.danger,
+                emoji="🔒",
+                custom_id=f"close_ticket:{ticket_id}"
+            ))
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.components:
+                        await msg.edit(view=new_view)
+                        break
+            except:
+                pass
 
         await interaction.response.send_message("✅ You have claimed this ticket.", ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Parse ticket_id from custom_id
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         ticket_id = button.custom_id.split(":")[1]
         ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
             return
 
-        # Check if user has permission: ticket creator, claimer, or admin
-        if interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by") and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
             return
 
-        # Close ticket: delete channel, update DB
+        ping_role_ids = []
+        for i in range(1, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission and interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by"):
+            await interaction.response.send_message("❌ You are not able to close this ticket. Only the ticket creator, the claimer, or admins with the configured ping roles can close.", ephemeral=True)
+            return
+
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
             await channel.delete(reason=f"Ticket closed by {interaction.user}")
@@ -1037,7 +988,6 @@ async def ticket_command(
     ping_role_3: discord.Role = None,
     ping_role_4: discord.Role = None
 ):
-    # Parse color
     try:
         if color.startswith("#"):
             color_val = int(color[1:], 16)
@@ -1046,7 +996,6 @@ async def ticket_command(
     except:
         color_val = 0x2b2d31
 
-    # Map color string to discord.ButtonStyle
     color_map = {
         "gray": discord.ButtonStyle.gray,
         "blurple": discord.ButtonStyle.blurple,
@@ -1055,7 +1004,6 @@ async def ticket_command(
     }
     button_style = color_map.get(label_color.lower(), discord.ButtonStyle.gray)
 
-    # Build panel config
     panel_data = {
         "guild_id": interaction.guild.id,
         "channel_id": interaction.channel.id,
@@ -1075,7 +1023,6 @@ async def ticket_command(
     result = ticket_panels_col.insert_one(panel_data)
     panel_id = str(result.inserted_id)
 
-    # Create embed
     embed = discord.Embed(
         title="🎫 Ticket System",
         description=description,
@@ -1083,26 +1030,20 @@ async def ticket_command(
     )
     embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
 
-    # Create view with open ticket button
-    view = TicketPanelView(panel_id)
-    # We need to customize the button label and emoji
-    # The button is already defined in the class; we need to replace it.
-    # Since we can't change the button after it's created in the class, we'll create a new view with a custom button.
-    # We'll override the open_ticket_button by creating a new view with a button that has our custom label/emoji/style.
-    custom_view = discord.ui.View(timeout=None)
+    view = discord.ui.View(timeout=None)
     open_button = discord.ui.Button(
         label=label_button,
         style=button_style,
         emoji=label_emoji,
         custom_id=f"open_ticket:{panel_id}"
     )
-    # We'll define a callback for this button manually
+
     async def open_callback(interaction: discord.Interaction):
-        # Same logic as in TicketPanelView.open_ticket_button
         panel = ticket_panels_col.find_one({"_id": ObjectId(panel_id)})
         if not panel:
             await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
             return
+
         existing = tickets_col.find_one({
             "guild_id": interaction.guild.id,
             "user_id": interaction.user.id,
@@ -1146,7 +1087,6 @@ async def ticket_command(
         )
         embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
 
-        ticket_view = TicketView(ticket_id=None, panel=panel)
         ticket_doc = {
             "guild_id": guild.id,
             "channel_id": channel.id,
@@ -1158,9 +1098,9 @@ async def ticket_command(
         }
         result_ticket = tickets_col.insert_one(ticket_doc)
         ticket_id = str(result_ticket.inserted_id)
-        ticket_view.ticket_id = ticket_id
         tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
 
+        ticket_view = TicketView(ticket_id, panel)
         await channel.send(embed=embed_ticket, view=ticket_view)
 
         jump_view = discord.ui.View()
@@ -1178,9 +1118,9 @@ async def ticket_command(
             await channel.send(f"📢 {mention_text}")
 
     open_button.callback = open_callback
-    custom_view.add_item(open_button)
+    view.add_item(open_button)
 
-    await interaction.response.send_message(embed=embed, view=custom_view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.event
 async def on_ready():
@@ -1267,8 +1207,218 @@ async def show_commands(ctx):
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
     await ctx.send(embed=emb, mention_author=True)
 
-# Keep all other prefix commands (.l, .get, .env, .obf) unchanged
-# ... (they are already defined above)
+@bot.command(name="l")
+async def deobf_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if not link:
+        content = await extract_code(ctx)
+    else:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    if not content:
+        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
+        return await ctx.reply(embed=emb, mention_author=True)
+
+    proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
+
+    try:
+        success, result = await deobfuscate_prometheus_lua(content)
+        if success:
+            report = {
+                "obfuscator": {"name": "Prometheus", "confidence": 100},
+                "steps": ["• Deobfuscated using Prometheus Lua function"],
+                "layers_reached": 1,
+                "max_layers": 1,
+                "anti_found": [],
+                "status": "Fully unpacked",
+                "result": result,
+                "snippets": []
+            }
+            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+            await proc.delete()
+            if file:
+                await ctx.reply(embed=emb, file=file, mention_author=True)
+            else:
+                await ctx.reply(embed=emb, mention_author=True)
+            if logs_col is not None:
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            return
+
+        success, result = deobfuscate_wearedevs(content)
+        if success:
+            report = {
+                "obfuscator": {"name": "WeAreDevs", "confidence": 100},
+                "steps": ["• Deobfuscated using WeAreDevs pattern"],
+                "layers_reached": 1,
+                "max_layers": 1,
+                "anti_found": [],
+                "status": "Fully unpacked",
+                "result": result,
+                "snippets": []
+            }
+            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+            await proc.delete()
+            if file:
+                await ctx.reply(embed=emb, file=file, mention_author=True)
+            else:
+                await ctx.reply(embed=emb, mention_author=True)
+            if logs_col is not None:
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            return
+
+        timeout = 180 if len(content) > 500000 else 60
+        dec = await asyncio.wait_for(
+            asyncio.to_thread(deobfuscate_code, content),
+            timeout=timeout
+        )
+
+        obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
+        confidence = 100 if dec["detected"] else 100
+        max_layers = 8
+        report = {
+            "obfuscator": {"name": obfuscator_name, "confidence": confidence},
+            "steps": [f"• {s}" for s in dec["steps"]],
+            "layers_reached": dec["layers_done"],
+            "max_layers": max_layers,
+            "anti_found": [f"• {a}" for a in dec["anti_found"]],
+            "status": dec["status"],
+            "result": dec["result"],
+            "snippets": dec["snippets"]
+        }
+        emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except asyncio.TimeoutError:
+        try: await proc.delete()
+        except: pass
+        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long. Try a smaller file."), mention_author=True)
+    except Exception as e:
+        try: await proc.delete()
+        except: pass
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+        print(f"Deobf error: {e}")
+
+@bot.command(name="get")
+async def fetch_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if not link and ctx.message.reference:
+        try:
+            ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            m = re.search(r'https?://[^\s<>]+', ref.content)
+            if m: link = m.group(0)
+        except: pass
+    if not link:
+        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nExample: `.get https://example.com/file.lua`")
+        return await ctx.reply(embed=emb, mention_author=True)
+    proc = await ctx.reply(f"📄 Fetching & decoding {ctx.author.mention}...", mention_author=True)
+    try:
+        ok, cont, msg = await fetch_content(link)
+        if not ok:
+            await proc.delete()
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+        emb, file = make_result_embed(ctx, "📄 Raw Source Code", raw=cont)
+        await proc.delete()
+        if file: await ctx.reply(embed=emb, file=file, mention_author=True)
+        else: await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+
+@bot.command(name="env")
+async def env_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if not link:
+        content = await extract_code(ctx)
+    else:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    if not content:
+        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
+        return await ctx.reply(embed=emb, mention_author=True)
+
+    proc = await ctx.reply(f"🛡️ Bypassing anti-env checks {ctx.author.mention}...", mention_author=True)
+    try:
+        dumper = EnvBypassDumper()
+        bypass_result = dumper.full_bypass(content)
+        patched_code = bypass_result["patched_code"]
+        bypassed = bypass_result["bypassed_count"]
+        snippets = dumper.removed_snippets[:10]
+
+        if not patched_code:
+            patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
+
+        env_report = {
+            "patched_code": patched_code,
+            "bypassed_count": bypassed,
+            "snippets": snippets
+        }
+        emb, file = make_result_embed(ctx, "🛡️ Anti-env Bypass Complete", env_bypass=env_report)
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+        print(f"Env error: {e}")
+
+@bot.command(name="obf")
+async def obfuscate_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if link:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    else:
+        content = await extract_code(ctx)
+    if not content:
+        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
+        return await ctx.reply(embed=emb, mention_author=True)
+
+    proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
+    try:
+        success, result = obfuscate_prometheus_python(content)
+        if not success:
+            await proc.delete()
+            await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
+            return
+
+        obfuscated = result
+        size_b = obfuscated.encode('utf-8')
+        size_kb = len(size_b) / 1024
+        file = None
+        desc = f"{ctx.author.mention}\n**Obfuscation:** Prometheus\n**Size:** `{round(size_kb,2)} KB`"
+        if size_kb > 10 or len(obfuscated) > 1800:
+            file = File(io.BytesIO(size_b), filename="obfuscated.lua")
+            desc += f"\n📦 Full code sent as file"
+            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
+        else:
+            preview = obfuscated[:1500] + ("\n... [truncated]" if len(obfuscated) > 1500 else "")
+            desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
+            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
+        emb.set_footer(text=f"Requested by {ctx.author}")
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+    except Exception as e:
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 def keep_alive():
     while True:
