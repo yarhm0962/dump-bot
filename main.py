@@ -21,8 +21,6 @@ from pymongo.server_api import ServerApi
 import asyncio
 import threading
 import time
-import subprocess
-import tempfile
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -196,21 +194,12 @@ async def fetch_content(url: str) -> tuple[bool, str, str]:
 async def extract_code(ctx):
     content = ""
     for att in ctx.message.attachments:
-        if att.filename.lower().endswith(('.lua', '.txt', '.luau', '.rbxmx', '.rbxlua', '.lua.txt')):
-            try:
-                data = await att.read()
-                content = data.decode('utf-8', errors='replace')
-                return decode_all_escapes(content)
-            except:
-                pass
-        else:
-            try:
-                data = await att.read()
-                content = data.decode('utf-8', errors='replace')
-                if re.search(r'(function|local|if|then|end|print|return)', content, re.I):
-                    return decode_all_escapes(content)
-            except:
-                pass
+        try:
+            data = await att.read()
+            content = data.decode('utf-8', errors='replace')
+            return decode_all_escapes(content)
+        except:
+            pass
     code_blocks = re.findall(r'```(?:lua)?\n(.*?)```', ctx.message.content, re.DOTALL)
     if code_blocks: return decode_all_escapes('\n'.join(code_blocks))
     inline = re.findall(r'`([^`]+)`', ctx.message.content)
@@ -310,18 +299,48 @@ async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-# ---------- PURE PYTHON OBFUSCATOR (no Lua needed) ----------
 def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
     try:
-        key = random.randint(30, 230)
-        bytes_data = code.encode('utf-8')
-        obf_bytes = bytes([(b + key) % 256 for b in bytes_data])
-        b64 = base64.b64encode(obf_bytes).decode('ascii')
-        obfuscated = f'''--[[ OBFUSCATED BY PROMETHEUS 12.3 ]]
-local _k={key}
-local _d=("{b64}"):gsub(".", function(c) return string.char((c:byte() - _k) % 256) end)
-local _s=loadstring(_d)
-if _s then _s() else error("Failed to load") end'''
+        chunk_size = random.randint(20, 50)
+        chunks = []
+        for i in range(0, len(code), chunk_size):
+            chunk = code[i:i+chunk_size]
+            b64 = base64.b64encode(chunk.encode('utf-8')).decode('ascii')
+            chunks.append(b64)
+
+        obfuscated = '''return(function(...)local L={'''
+
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                obfuscated += ';'
+            obfuscated += f'"{chunk}"'
+
+        obfuscated += ''';
+local function b64dec(data)
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    data = data:gsub('[^'..b..'=]', '')
+    return (data:gsub('.', function(x)
+        if x == '=' then return '' end
+        local r,f='',(b:find(x)-1)
+        for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
+        return r
+    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+        if #x ~= 8 then return '' end
+        local c=0
+        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+        return string.char(c)
+    end))
+end
+local output = {}
+for _,chunk in ipairs(L) do
+    local ok, res = pcall(b64dec, chunk)
+    if ok and res then table.insert(output, res) end
+end
+local raw = table.concat(output)
+local fn = loadstring and loadstring(raw) or load(raw)
+if fn then fn() else error("Failed to load obfuscated code") end
+end)(...)'''
+
         return True, obfuscated
     except Exception as e:
         return False, str(e)
@@ -721,7 +740,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="`Obfuscate [.obf]`",
-        value="Obfuscate Lua code using Prometheus (pure Python – no Lua required).",
+        value="Obfuscate Lua code using Prometheus (full format with chunking & base64).",
         inline=False
     )
     emb.add_field(
@@ -924,7 +943,6 @@ async def obfuscate_command(ctx, *, link=None):
 
     proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
     try:
-        # Use pure Python obfuscator – no Lua needed
         success, result = obfuscate_prometheus_python(content)
         if not success:
             await proc.delete()
