@@ -659,7 +659,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ---------- NEW: Full Bypass Function ----------
 async def full_bypass(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
@@ -670,10 +669,10 @@ async def full_bypass(url: str):
     content = ""
     delta_key = None
 
-    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=25), follow_redirects=False) as session:
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as session:
         try:
             for _ in range(15):
-                async with session.get(current_url) as resp:
+                async with session.get(current_url, allow_redirects=False) as resp:
                     if resp.status in {301,302,303,307,308}:
                         loc = resp.headers.get("Location")
                         if loc:
@@ -740,11 +739,10 @@ async def full_bypass(url: str):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-# ---------- Slash Command: /bypass ----------
 @bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
 @app_commands.describe(url="The Delta Executor URL to bypass")
 async def slash_bypass(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     try:
         result = await full_bypass(url)
         if not result["ok"]:
@@ -753,7 +751,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
                 description=f"An error occurred:\n```{result.get('error', 'Unknown error')}```",
                 color=0xe74c3c
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
             return
 
         delta_key = result.get("delta_key")
@@ -788,14 +786,14 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         copy_button.callback = copy_button_callback
         view.add_item(copy_button)
 
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         embed = discord.Embed(
             title="❌ Error",
             description=f"An unexpected error occurred:\n```{str(e)}```",
             color=0xe74c3c
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
 @bot.event
 async def on_ready():
