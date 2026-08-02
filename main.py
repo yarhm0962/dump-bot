@@ -647,7 +647,7 @@ def obfuscate_prometheus(code: str) -> tuple[bool, str]:
         bytes_data = code.encode('utf-8')
         obf_bytes = bytes([b ^ key for b in bytes_data])
         b64 = base64.b64encode(obf_bytes).decode('ascii')
-        obfuscated = f'''-- Prometheus Obfuscator
+        obfuscated = f'''--[[ OBFUSCATED BY PROMETHEUS 12.3 ]]
 local _k={key}
 local _d=("{b64}"):gsub(".", function(c) return string.char((c:byte()^_k)%256) end)
 local _s=loadstring(_d)
