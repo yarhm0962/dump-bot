@@ -1077,8 +1077,8 @@ class TicketView(discord.ui.View):
             creator = await bot.fetch_user(ticket["user_id"])
             if creator:
                 embed_dm = discord.Embed(
-                    title="Ticket has been closed",
-                    description=f"This ticket has been closed by {interaction.user.display_name}.",
+                    title="Ticket Closed",
+                    description=f"This ticket has been closed by {interaction.user.mention}.",
                     color=0x2b2d31
                 )
                 embed_dm.add_field(name="Ticket name", value=f"ticket-{creator.name}", inline=False)
