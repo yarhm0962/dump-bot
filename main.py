@@ -828,152 +828,22 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-class TicketView(discord.ui.View):
-    def __init__(self, ticket_id, panel):
-        super().__init__(timeout=None)
-        self.ticket_id = ticket_id
-        self.panel = panel
-        self.claim_enabled = panel.get("claim_enabled", False)
-        self.add_item(discord.ui.Button(
-            label="Close",
-            style=discord.ButtonStyle.danger,
-            emoji="🔒",
-            custom_id=f"close_ticket:{ticket_id}"
-        ))
-        if self.claim_enabled:
-            self.add_item(discord.ui.Button(
-                label="Claim",
-                style=discord.ButtonStyle.blurple,
-                emoji="🖐️",
-                custom_id=f"claim_ticket:{ticket_id}"
-            ))
-
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.blurple, emoji="🖐️", custom_id="claim_ticket")
-    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        ticket_id = button.custom_id.split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
-        if not ticket:
-            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
-            return
-
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
-        if not panel:
-            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
-            return
-
-        ping_role_ids = []
-        for i in range(1, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-
-        has_permission = False
-        for rid in ping_role_ids:
-            if discord.utils.get(interaction.user.roles, id=rid):
-                has_permission = True
-                break
-        if not has_permission:
-            await interaction.response.send_message("❌ You are not able to claim this ticket. Only admins with the configured ping roles can claim.", ephemeral=True)
-            return
-
-        if ticket.get("claimed_by"):
-            await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
-            return
-
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
-
-        channel = interaction.guild.get_channel(ticket["channel_id"])
-        if channel:
-            embed = discord.Embed(
-                title="🖐️ Ticket Claimed",
-                description=f"An admin claimed your ticket: {interaction.user.mention}",
-                color=discord.Color.yellow()
-            )
-            await channel.send(embed=embed)
-            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {discord.utils.get(interaction.guild.members, id=ticket['user_id']).mention}")
-
-            try:
-                async for msg in channel.history(limit=10):
-                    if msg.author == bot.user and msg.embeds:
-                        embed_obj = msg.embeds[0]
-                        if embed_obj.title == "🎟️ Ticket Created":
-                            new_embed = discord.Embed.from_dict(embed_obj.to_dict())
-                            new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
-                            await msg.edit(embed=new_embed)
-                            break
-            except:
-                pass
-
-            new_view = TicketView(ticket_id, panel)
-            new_view.claim_enabled = False
-            new_view.clear_items()
-            new_view.add_item(discord.ui.Button(
-                label="Close",
-                style=discord.ButtonStyle.danger,
-                emoji="🔒",
-                custom_id=f"close_ticket:{ticket_id}"
-            ))
-            try:
-                async for msg in channel.history(limit=10):
-                    if msg.author == bot.user and msg.components:
-                        await msg.edit(view=new_view)
-                        break
-            except:
-                pass
-
-        await interaction.response.send_message("✅ You have claimed this ticket.", ephemeral=True)
-
-    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket")
-    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        ticket_id = button.custom_id.split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
-        if not ticket:
-            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
-            return
-
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
-        if not panel:
-            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
-            return
-
-        ping_role_ids = []
-        for i in range(1, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-
-        has_permission = False
-        for rid in ping_role_ids:
-            if discord.utils.get(interaction.user.roles, id=rid):
-                has_permission = True
-                break
-        if not has_permission and interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by"):
-            await interaction.response.send_message("❌ You are not able to close this ticket. Only the ticket creator, the claimer, or admins with the configured ping roles can close.", ephemeral=True)
-            return
-
-        channel = interaction.guild.get_channel(ticket["channel_id"])
-        if channel:
-            await channel.delete(reason=f"Ticket closed by {interaction.user}")
-
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
-
-        await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
-
+# ---------- Ticket System (Fixed) ----------
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
         super().__init__(timeout=None)
         self.panel_id = panel_id
-        self.add_item(discord.ui.Button(
+        button = discord.ui.Button(
             label=button_label,
             style=button_style,
             emoji=button_emoji,
             custom_id=f"open_ticket:{panel_id}"
-        ))
+        )
+        button.callback = self.open_ticket_callback
+        self.add_item(button)
 
-    @discord.ui.button(custom_id="open_ticket")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        panel_id = button.custom_id.split(":")[1]
-        panel = ticket_panels_col.find_one({"_id": ObjectId(panel_id)})
+    async def open_ticket_callback(self, interaction: discord.Interaction):
+        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
         if not panel:
             await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
             return
@@ -1033,7 +903,7 @@ class PersistentTicketPanel(discord.ui.View):
             "claimed_by": None,
             "closed": False,
             "created_at": datetime.utcnow(),
-            "panel_id": panel_id
+            "panel_id": self.panel_id
         }
         result_ticket = tickets_col.insert_one(ticket_doc)
         ticket_id = str(result_ticket.inserted_id)
@@ -1056,6 +926,141 @@ class PersistentTicketPanel(discord.ui.View):
         if ping_role_ids:
             mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
             await channel.send(f"📢 {mention_text}")
+
+class TicketView(discord.ui.View):
+    def __init__(self, ticket_id, panel):
+        super().__init__(timeout=None)
+        self.ticket_id = ticket_id
+        self.panel = panel
+
+        close_button = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.danger,
+            emoji="🔒",
+            custom_id=f"close_ticket:{ticket_id}"
+        )
+        close_button.callback = self.close_callback
+        self.add_item(close_button)
+
+        if panel.get("claim_enabled", False):
+            claim_button = discord.ui.Button(
+                label="Claim",
+                style=discord.ButtonStyle.blurple,
+                emoji="🖐️",
+                custom_id=f"claim_ticket:{ticket_id}"
+            )
+            claim_button.callback = self.claim_callback
+            self.add_item(claim_button)
+
+    async def claim_callback(self, interaction: discord.Interaction):
+        ticket_id = interaction.data["custom_id"].split(":")[1]
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+            return
+
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
+            return
+
+        ping_role_ids = []
+        for i in range(1, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission:
+            await interaction.response.send_message("❌ You are not able to claim this ticket. Only admins with the configured ping roles can claim.", ephemeral=True)
+            return
+
+        if ticket.get("claimed_by"):
+            await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
+            return
+
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
+
+        channel = interaction.guild.get_channel(ticket["channel_id"])
+        if channel:
+            embed = discord.Embed(
+                title="🖐️ Ticket Claimed",
+                description=f"An admin claimed your ticket: {interaction.user.mention}",
+                color=discord.Color.yellow()
+            )
+            await channel.send(embed=embed)
+            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {discord.utils.get(interaction.guild.members, id=ticket['user_id']).mention}")
+
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.embeds:
+                        embed_obj = msg.embeds[0]
+                        if embed_obj.title == "🎟️ Ticket Created":
+                            new_embed = discord.Embed.from_dict(embed_obj.to_dict())
+                            new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
+                            await msg.edit(embed=new_embed)
+                            break
+            except:
+                pass
+
+            new_view = TicketView(ticket_id, panel)
+            new_view.clear_items()
+            close_button = discord.ui.Button(
+                label="Close",
+                style=discord.ButtonStyle.danger,
+                emoji="🔒",
+                custom_id=f"close_ticket:{ticket_id}"
+            )
+            close_button.callback = new_view.close_callback
+            new_view.add_item(close_button)
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.components:
+                        await msg.edit(view=new_view)
+                        break
+            except:
+                pass
+
+        await interaction.response.send_message("✅ You have claimed this ticket.", ephemeral=True)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        ticket_id = interaction.data["custom_id"].split(":")[1]
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+            return
+
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
+            return
+
+        ping_role_ids = []
+        for i in range(1, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission and interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by"):
+            await interaction.response.send_message("❌ You are not able to close this ticket. Only the ticket creator, the claimer, or admins with the configured ping roles can close.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(ticket["channel_id"])
+        if channel:
+            await channel.delete(reason=f"Ticket closed by {interaction.user}")
+
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
+
+        await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
 
 @bot.tree.command(name="ticket", description="Create a ticket panel")
 @app_commands.describe(
@@ -1086,6 +1091,7 @@ async def ticket_command(
     ping_role_3: discord.Role = None,
     ping_role_4: discord.Role = None
 ):
+    await interaction.response.defer(ephemeral=True)
     try:
         if color.startswith("#"):
             color_val = int(color[1:], 16)
@@ -1129,8 +1135,10 @@ async def ticket_command(
     embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
 
     view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.followup.send(embed=embed, view=view)
     bot.add_view(view)
+    except Exception as e:
+        await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
 @bot.event
 async def on_ready():
