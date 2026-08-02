@@ -891,9 +891,7 @@ class PersistentTicketPanel(discord.ui.View):
 
         await channel.edit(overwrites=overwrites)
 
-        if ping_role_ids:
-            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
-            await channel.send(mention_text)
+        mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else None
 
         embed_ticket = discord.Embed(
             title="🎟️ Ticket Created",
@@ -916,7 +914,7 @@ class PersistentTicketPanel(discord.ui.View):
         tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
 
         ticket_view = TicketView(ticket_id, panel)
-        await channel.send(embed=embed_ticket, view=ticket_view)
+        await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
         bot.add_view(ticket_view)
 
         jump_view = discord.ui.View()
@@ -1125,39 +1123,29 @@ async def ticket_command(
     ping_role_3: discord.Role = None,
     ping_role_4: discord.Role = None
 ):
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
 
     color_val = None
-    valid_colors = []
     if color.startswith("#"):
         try:
             color_val = int(color[1:], 16)
         except ValueError:
             await interaction.followup.send(
-                f"❌ Invalid hex color code. Please use a valid hex code (e.g., #ff0000).\nAvailable color names: `default, teal, dark_teal, green, dark_green, blue, dark_blue, purple, dark_purple, magenta, dark_magenta, gold, dark_gold, orange, dark_orange, red, dark_red, lighter_grey, dark_grey, light_grey, darker_grey, blurple, greyple, dark_theme, fuchsia, yellow, pink`",
+                "❌ Invalid hex color code. Please use a valid hex code (e.g., #ff0000).\nAvailable color names: `dark_magenta, light_grey, orange, gold, red, blue, dark_theme, darker_grey, blurple, yellow, greyple, magenta, dark_grey, default, dark_gold, green, dark_green, dark_orange, teal, dark_purple, purple, pink, lighter_grey, fuchsia, dark_red, dark_blue, dark_teal`",
                 ephemeral=True
             )
             return
     else:
-        for attr in dir(discord.Color):
-            if attr.startswith("_"):
-                continue
-            try:
-                val = getattr(discord.Color, attr)
-                if isinstance(val, discord.Color):
-                    valid_colors.append(attr)
-            except:
-                pass
-        known = ["default", "teal", "dark_teal", "green", "dark_green", "blue", "dark_blue",
-                 "purple", "dark_purple", "magenta", "dark_magenta", "gold", "dark_gold",
-                 "orange", "dark_orange", "red", "dark_red", "lighter_grey", "dark_grey",
-                 "light_grey", "darker_grey", "blurple", "greyple", "dark_theme", "fuchsia",
-                 "yellow", "pink"]
-        valid_colors = list(set(valid_colors + known))
+        valid_colors = [
+            "dark_magenta", "light_grey", "orange", "gold", "red", "blue",
+            "dark_theme", "darker_grey", "blurple", "yellow", "greyple",
+            "magenta", "dark_grey", "default", "dark_gold", "green",
+            "dark_green", "dark_orange", "teal", "dark_purple", "purple",
+            "pink", "lighter_grey", "fuchsia", "dark_red", "dark_blue", "dark_teal"
+        ]
         if color.lower() not in valid_colors:
-            color_list = ", ".join(valid_colors)
             await interaction.followup.send(
-                f"❌ Wrong color name. Please use a valid color name.\nAvailable colors: `{color_list}`",
+                f"❌ Wrong color name. Please use a valid color name.\nAvailable colors: `{', '.join(valid_colors)}`",
                 ephemeral=True
             )
             return
@@ -1201,7 +1189,8 @@ async def ticket_command(
     embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
 
     view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
-    await interaction.followup.send(embed=embed, view=view)
+    await interaction.followup.send("✅ Successfully created a ticket panel", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
 @bot.event
