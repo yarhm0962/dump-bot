@@ -959,6 +959,104 @@ class TicketView(discord.ui.View):
 
         await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
 
+class PersistentTicketPanel(discord.ui.View):
+    def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
+        super().__init__(timeout=None)
+        self.panel_id = panel_id
+        self.add_item(discord.ui.Button(
+            label=button_label,
+            style=button_style,
+            emoji=button_emoji,
+            custom_id=f"open_ticket:{panel_id}"
+        ))
+
+    @discord.ui.button(custom_id="open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        panel_id = button.custom_id.split(":")[1]
+        panel = ticket_panels_col.find_one({"_id": ObjectId(panel_id)})
+        if not panel:
+            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
+            return
+
+        existing = tickets_col.find_one({
+            "guild_id": interaction.guild.id,
+            "user_id": interaction.user.id,
+            "closed": False
+        })
+        if existing:
+            channel = interaction.guild.get_channel(existing["channel_id"])
+            if channel is None:
+                tickets_col.update_one({"_id": existing["_id"]}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}})
+                existing = None
+            else:
+                await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
+                return
+
+        guild = interaction.guild
+        category = discord.utils.get(guild.categories, name="Tickets")
+        if not category:
+            category = await guild.create_category("Tickets")
+
+        channel = await guild.create_text_channel(
+            name=f"ticket-{interaction.user.name}",
+            category=category,
+            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
+        )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
+        }
+        ping_role_ids = []
+        for i in range(1, 5):
+            role_id = panel.get(f"ping_role_{i}")
+            if role_id:
+                role = guild.get_role(role_id)
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                    ping_role_ids.append(role_id)
+
+        await channel.edit(overwrites=overwrites)
+
+        embed_ticket = discord.Embed(
+            title="🎟️ Ticket Created",
+            description=f"{interaction.user.mention} has created a new **🎟️ Create Ticket** ticket.",
+            color=panel.get("color", 0x2b2d31)
+        )
+        embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
+
+        ticket_doc = {
+            "guild_id": guild.id,
+            "channel_id": channel.id,
+            "user_id": interaction.user.id,
+            "claimed_by": None,
+            "closed": False,
+            "created_at": datetime.utcnow(),
+            "panel_id": panel_id
+        }
+        result_ticket = tickets_col.insert_one(ticket_doc)
+        ticket_id = str(result_ticket.inserted_id)
+        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
+
+        ticket_view = TicketView(ticket_id, panel)
+        await channel.send(embed=embed_ticket, view=ticket_view)
+        bot.add_view(ticket_view)
+
+        jump_view = discord.ui.View()
+        jump_button = discord.ui.Button(
+            label="Go to Ticket",
+            style=discord.ButtonStyle.primary,
+            url=channel.jump_url
+        )
+        jump_view.add_item(jump_button)
+
+        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
+
+        if ping_role_ids:
+            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
+            await channel.send(f"📢 {mention_text}")
+
 @bot.tree.command(name="ticket", description="Create a ticket panel")
 @app_commands.describe(
     ping_role="The role to ping when a ticket is created",
@@ -1030,97 +1128,9 @@ async def ticket_command(
     )
     embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
 
-    view = discord.ui.View(timeout=None)
-    open_button = discord.ui.Button(
-        label=label_button,
-        style=button_style,
-        emoji=label_emoji,
-        custom_id=f"open_ticket:{panel_id}"
-    )
-
-    async def open_callback(interaction: discord.Interaction):
-        panel = ticket_panels_col.find_one({"_id": ObjectId(panel_id)})
-        if not panel:
-            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
-            return
-
-        existing = tickets_col.find_one({
-            "guild_id": interaction.guild.id,
-            "user_id": interaction.user.id,
-            "closed": False
-        })
-        if existing:
-            await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
-            return
-
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if not category:
-            category = await guild.create_category("Tickets")
-
-        channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}",
-            category=category,
-            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
-        )
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
-        }
-        ping_role_ids = []
-        for i in range(1, 5):
-            role_id = panel.get(f"ping_role_{i}")
-            if role_id:
-                role = guild.get_role(role_id)
-                if role:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                    ping_role_ids.append(role_id)
-
-        await channel.edit(overwrites=overwrites)
-
-        embed_ticket = discord.Embed(
-            title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a new **🎟️ Create Ticket** ticket.",
-            color=panel.get("color", 0x2b2d31)
-        )
-        embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
-
-        ticket_doc = {
-            "guild_id": guild.id,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "claimed_by": None,
-            "closed": False,
-            "created_at": datetime.utcnow(),
-            "panel_id": panel_id
-        }
-        result_ticket = tickets_col.insert_one(ticket_doc)
-        ticket_id = str(result_ticket.inserted_id)
-        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
-
-        ticket_view = TicketView(ticket_id, panel)
-        await channel.send(embed=embed_ticket, view=ticket_view)
-
-        jump_view = discord.ui.View()
-        jump_button = discord.ui.Button(
-            label="Go to Ticket",
-            style=discord.ButtonStyle.primary,
-            url=channel.jump_url
-        )
-        jump_view.add_item(jump_button)
-
-        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
-
-        if ping_role_ids:
-            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids])
-            await channel.send(f"📢 {mention_text}")
-
-    open_button.callback = open_callback
-    view.add_item(open_button)
-
+    view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
     await interaction.response.send_message(embed=embed, view=view)
+    bot.add_view(view)
 
 @bot.event
 async def on_ready():
@@ -1130,6 +1140,22 @@ async def on_ready():
         print("✅ Slash commands synced globally")
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
+
+    panels = ticket_panels_col.find()
+    for panel in panels:
+        panel_id = str(panel["_id"])
+        button_style = discord.ButtonStyle.gray
+        color_map = {"gray": discord.ButtonStyle.gray, "blurple": discord.ButtonStyle.blurple, "green": discord.ButtonStyle.green, "red": discord.ButtonStyle.red}
+        if panel.get("label_color"):
+            button_style = color_map.get(panel["label_color"].lower(), discord.ButtonStyle.gray)
+        view = PersistentTicketPanel(
+            panel_id,
+            panel.get("label_button", "Open Ticket"),
+            panel.get("label_emoji", "🎟️"),
+            button_style
+        )
+        bot.add_view(view)
+
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /bypass | /ticket"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
