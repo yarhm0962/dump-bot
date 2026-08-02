@@ -930,7 +930,7 @@ class PersistentTicketPanel(discord.ui.View):
         await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
 
 class TicketView(discord.ui.View):
-    def __init__(self, ticket_id, panel, claim_disabled=False):
+    def __init__(self, ticket_id, panel, claim_disabled=None):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
         self.panel = panel
@@ -944,16 +944,18 @@ class TicketView(discord.ui.View):
         close_button.callback = self.close_callback
         self.add_item(close_button)
 
-        if panel.get("claim_enabled", False):
-            claim_button = discord.ui.Button(
-                label="Claim",
-                style=discord.ButtonStyle.gray,
-                emoji="📜",
-                custom_id=f"claim_ticket:{ticket_id}",
-                disabled=claim_disabled
-            )
-            claim_button.callback = self.claim_callback
-            self.add_item(claim_button)
+        if claim_disabled is None:
+            claim_disabled = not panel.get("claim_enabled", False)
+
+        claim_button = discord.ui.Button(
+            label="Claim",
+            style=discord.ButtonStyle.gray,
+            emoji="📜",
+            custom_id=f"claim_ticket:{ticket_id}",
+            disabled=claim_disabled
+        )
+        claim_button.callback = self.claim_callback
+        self.add_item(claim_button)
 
     async def claim_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
@@ -1017,16 +1019,15 @@ class TicketView(discord.ui.View):
             )
             close_button.callback = new_view.close_callback
             new_view.add_item(close_button)
-            if panel.get("claim_enabled", False):
-                claim_button = discord.ui.Button(
-                    label="Claim",
-                    style=discord.ButtonStyle.gray,
-                    emoji="📜",
-                    custom_id=f"claim_ticket:{ticket_id}",
-                    disabled=True
-                )
-                claim_button.callback = new_view.claim_callback
-                new_view.add_item(claim_button)
+            claim_button = discord.ui.Button(
+                label="Claim",
+                style=discord.ButtonStyle.gray,
+                emoji="📜",
+                custom_id=f"claim_ticket:{ticket_id}",
+                disabled=True
+            )
+            claim_button.callback = new_view.claim_callback
+            new_view.add_item(claim_button)
             try:
                 async for msg in channel.history(limit=10):
                     if msg.author == bot.user and msg.components:
@@ -1072,9 +1073,9 @@ class TicketView(discord.ui.View):
 
         tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
 
-        creator = interaction.guild.get_member(ticket["user_id"])
-        if creator:
-            try:
+        try:
+            creator = await bot.fetch_user(ticket["user_id"])
+            if creator:
                 embed_dm = discord.Embed(
                     title="Ticket has been closed",
                     description=f"This ticket has been closed by {interaction.user.display_name}.",
@@ -1084,15 +1085,15 @@ class TicketView(discord.ui.View):
                 embed_dm.add_field(name="Server", value=interaction.guild.name, inline=False)
                 embed_dm.set_footer(text="MonLua Bot")
                 await creator.send(embed=embed_dm)
-            except:
-                pass
+        except Exception as e:
+            print(f"Failed to DM user: {e}")
 
         await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
 
 @bot.tree.command(name="ticket", description="Create a ticket panel")
 @app_commands.describe(
     ping_role="The role to ping when a ticket is created",
-    toggle_claim_ticket="Enable claim feature for tickets",
+    enable_claim_button="Enable the Claim button for tickets",
     description="Panel description (default: Open the ticket below 🎟️)",
     footer="Footer text (default: Made by MonLua Bot)",
     color="Embed color (hex code or name, default: #2b2d31)",
@@ -1107,7 +1108,7 @@ class TicketView(discord.ui.View):
 async def ticket_command(
     interaction: discord.Interaction,
     ping_role: discord.Role,
-    toggle_claim_ticket: bool,
+    enable_claim_button: bool,
     description: str = "Open the ticket below 🎟️",
     footer: str = "Made by MonLua Bot",
     color: str = "#2b2d31",
@@ -1143,7 +1144,7 @@ async def ticket_command(
         "ping_role_2": ping_role_2.id if ping_role_2 else None,
         "ping_role_3": ping_role_3.id if ping_role_3 else None,
         "ping_role_4": ping_role_4.id if ping_role_4 else None,
-        "claim_enabled": toggle_claim_ticket,
+        "claim_enabled": enable_claim_button,
         "description": description,
         "footer_text": footer,
         "color": color_val,
