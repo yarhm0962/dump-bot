@@ -718,17 +718,28 @@ async def full_bypass(url: str):
                         async with session.get(ep) as kr:
                             if kr.status == 200:
                                 jdata = await kr.json()
-                                for field in ["key", "license", "delta_key", "access_key"]:
-                                    if field in jdata:
-                                        delta_key = str(jdata[field])
+                                for field in ["key", "license", "delta_key", "access_key", "result", "token"]:
+                                    val = str(jdata.get(field, ""))
+                                    if val and len(val) >= 20 and not "cloudflare" in val.lower():
+                                        delta_key = val
                                         break
                                 if delta_key: break
                     except:
                         continue
 
-            key_matches = re.findall(r'\b[A-Z0-9a-z_]{16,}\b', content)
-            if not delta_key and key_matches:
-                delta_key = key_matches[0]
+            if not delta_key:
+                key_patterns = [
+                    r'FREE_[A-Za-z0-9]{28,}',
+                    r'[A-Z0-9a-z_]{8,}-[A-Z0-9a-z_]{4,}-[A-Z0-9a-z_]{4,}-[A-Z0-9a-z_]{12,}',
+                    r'\b[A-Z0-9a-z]{32,}\b'
+                ]
+                for pat in key_patterns:
+                    matches = re.findall(pat, content)
+                    for match in matches:
+                        if "cloudflare" not in match.lower() and "insights" not in match.lower() and len(match) >= 24:
+                            delta_key = match
+                            break
+                    if delta_key: break
 
             return {
                 "ok": True,
@@ -782,7 +793,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
             if not delta_key:
                 await interaction.response.send_message("No key to copy.", ephemeral=True)
                 return
-            await interaction.response.send_message(f"📋 Delta Key:\n```{delta_key}```", ephemeral=True)
+            await interaction.response.send_message(delta_key, ephemeral=True)
         copy_button.callback = copy_button_callback
         view.add_item(copy_button)
 
