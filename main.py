@@ -698,9 +698,12 @@ async def full_bypass(url: str):
                     full_content += f"\n{text}"
 
                     if is_delta_link:
-                        tm = re.search(r'(have|for) ([0-9]+ days?, )?([0-9]+ hours?( and )?([0-9]+ minutes?)? left', text, re.I)
-                        if tm:
-                            time_left = tm.group(0)
+                        try:
+                            tm = re.search(r'(have|for) ([0-9]+ days?, )?([0-9]+ hours?( and )?([0-9]+ minutes?)?) left', text, re.I)
+                            if tm:
+                                time_left = tm.group(0)
+                        except:
+                            pass
 
                     next_url = None
                     patterns = [
@@ -711,10 +714,13 @@ async def full_bypass(url: str):
                         r'fetch\s*\(\s*["\']([^"\']+)["\']'
                     ]
                     for p in patterns:
-                        m = re.search(p, text, re.I)
-                        if m:
-                            next_url = m.group(1)
-                            break
+                        try:
+                            m = re.search(p, text, re.I)
+                            if m:
+                                next_url = m.group(1)
+                                break
+                        except:
+                            continue
                     if next_url:
                         if not next_url.startswith("http"):
                             base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
