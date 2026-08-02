@@ -995,7 +995,13 @@ class TicketView(discord.ui.View):
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
             creator_mention = f"<@{ticket['user_id']}>"
-            await channel.send(f"📢 {interaction.user.mention} has claimed this ticket. {creator_mention}")
+            
+            embed_claim = discord.Embed(
+                title="🖐️ Ticket Claimed",
+                description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
+                color=discord.Color.green()
+            )
+            await channel.send(content=interaction.user.mention, embed=embed_claim)
 
             try:
                 async for msg in channel.history(limit=10):
@@ -1121,13 +1127,44 @@ async def ticket_command(
 ):
     await interaction.response.defer(ephemeral=False)
 
-    try:
-        if color.startswith("#"):
+    color_val = None
+    valid_colors = []
+    if color.startswith("#"):
+        try:
             color_val = int(color[1:], 16)
-        else:
-            color_val = getattr(discord.Color, color.lower(), discord.Color.default()).value
-    except:
-        color_val = 0x2b2d31
+        except ValueError:
+            await interaction.followup.send(
+                f"❌ Invalid hex color code. Please use a valid hex code (e.g., #ff0000).\nAvailable color names: `default, teal, dark_teal, green, dark_green, blue, dark_blue, purple, dark_purple, magenta, dark_magenta, gold, dark_gold, orange, dark_orange, red, dark_red, lighter_grey, dark_grey, light_grey, darker_grey, blurple, greyple, dark_theme, fuchsia, yellow, pink`",
+                ephemeral=True
+            )
+            return
+    else:
+        for attr in dir(discord.Color):
+            if attr.startswith("_"):
+                continue
+            try:
+                val = getattr(discord.Color, attr)
+                if isinstance(val, discord.Color):
+                    valid_colors.append(attr)
+            except:
+                pass
+        known = ["default", "teal", "dark_teal", "green", "dark_green", "blue", "dark_blue",
+                 "purple", "dark_purple", "magenta", "dark_magenta", "gold", "dark_gold",
+                 "orange", "dark_orange", "red", "dark_red", "lighter_grey", "dark_grey",
+                 "light_grey", "darker_grey", "blurple", "greyple", "dark_theme", "fuchsia",
+                 "yellow", "pink"]
+        valid_colors = list(set(valid_colors + known))
+        if color.lower() not in valid_colors:
+            color_list = ", ".join(valid_colors)
+            await interaction.followup.send(
+                f"❌ Wrong color name. Please use a valid color name.\nAvailable colors: `{color_list}`",
+                ephemeral=True
+            )
+            return
+        try:
+            color_val = getattr(discord.Color, color.lower()).value
+        except AttributeError:
+            color_val = 0x2b2d31
 
     color_map = {
         "gray": discord.ButtonStyle.gray,
