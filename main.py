@@ -1092,6 +1092,7 @@ async def ticket_command(
     ping_role_4: discord.Role = None
 ):
     await interaction.response.defer(ephemeral=True)
+
     try:
         if color.startswith("#"):
             color_val = int(color[1:], 16)
@@ -1137,8 +1138,6 @@ async def ticket_command(
     view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
     await interaction.followup.send(embed=embed, view=view)
     bot.add_view(view)
-    except Exception as e:
-        await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
 @bot.event
 async def on_ready():
