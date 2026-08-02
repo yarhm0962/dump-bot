@@ -661,18 +661,28 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
 
 async def full_bypass(url: str):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
         "Referer": "https://delta-executor.com/",
-        "Accept-Language": "en-US,en;q=0.9"
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
+    visited = set()
     current_url = url
-    content = ""
+    full_content = ""
     delta_key = None
+    is_delta_link = "platorelay" in url.lower() or "delta" in url.lower()
+    time_left = None
 
-    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=40)) as session:
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=90)) as session:
         try:
-            for attempt in range(20):
+            for step in range(35):
+                if current_url in visited:
+                    break
+                visited.add(current_url)
+                await asyncio.sleep(0.6 + (step * 0.15))
+
                 async with session.get(current_url, allow_redirects=False) as resp:
                     if resp.status in {301,302,303,307,308}:
                         loc = resp.headers.get("Location")
@@ -682,82 +692,68 @@ async def full_bypass(url: str):
                                 current_url = base + loc
                             else:
                                 current_url = loc
-                            await asyncio.sleep(0.4)
                             continue
-                    
+
                     text = await resp.text()
-                    
-                    next_patterns = [
-                        r'window\.location\.replace\(["\']([^"\']+)["\']',
+                    full_content += f"\n{text}"
+
+                    if is_delta_link:
+                        tm = re.search(r'(have|for) ([0-9]+ days?, )?([0-9]+ hours?( and )?([0-9]+ minutes?)? left', text, re.I)
+                        if tm:
+                            time_left = tm.group(0)
+
+                    next_url = None
+                    patterns = [
+                        r'window\.location\.replace\s*\(\s*["\']([^"\']+)["\']',
                         r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
                         r'<meta[^>]+content=["\']\d+;url=([^"\'>]+)',
-                        r'action=["\']([^"\']+?)["\']',
-                        r'fetch\(["\']([^"\']+key[^"\']+)["\']'
+                        r'<form[^>]+action=["\']([^"\']+)["\']',
+                        r'fetch\s*\(\s*["\']([^"\']+)["\']'
                     ]
-                    found_next = None
-                    for pat in next_patterns:
-                        m = re.search(pat, text, re.I)
+                    for p in patterns:
+                        m = re.search(p, text, re.I)
                         if m:
-                            found_next = m.group(1)
+                            next_url = m.group(1)
                             break
-                    if found_next:
-                        if not found_next.startswith("http"):
+                    if next_url:
+                        if not next_url.startswith("http"):
                             base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
-                            current_url = base + found_next
+                            current_url = base + next_url
                         else:
-                            current_url = found_next
-                        await asyncio.sleep(0.7)
+                            current_url = next_url
                         continue
-                    
-                    content = text
                     break
 
-            parsed = urlparse(url)
-            qs = parse_qs(parsed.query)
-            hwid = qs.get("HWID", [qs.get("hwid", [None])[0]])[0]
-            if hwid:
-                api_endpoints = [
-                    f"https://api-gateway.platoboost.com/v1/authenticators/8/{hwid}",
-                    f"https://api.delta-executor.com/v1/key?hwid={hwid}"
-                ]
-                for ep in api_endpoints:
-                    try:
-                        async with session.get(ep) as kr:
-                            if kr.status == 200:
-                                jdata = await kr.json()
-                                for field in ["key", "licenseKey", "deltaKey", "access_key", "result", "token"]:
-                                    val = str(jdata.get(field, ""))
-                                    if val and len(val) >= 30:
-                                        delta_key = val
-                                        break
-                                if delta_key: break
-                    except:
-                        continue
+            all_text = re.sub(r'<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<[^>]+>', '\n', full_content, flags=re.DOTALL)
+            all_text = re.sub(r'\s+', ' ', all_text).strip()
 
-            if not delta_key:
-                valid_key_patterns = [
-                    r'FREE_[A-Za-z0-9]{30,}',
-                    r'PREMIUM_[A-Za-z0-9]{30,}',
-                    r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
-                    r'\b[A-Fa-f0-9]{64}\b',
-                    r'\b[A-Za-z0-9+/=]{40,}\b'
-                ]
-                bad_terms = ["cloudflare", "insights", "analytics", "static", "cdn", "script", "css", "js", "image"]
-                
-                for pat in valid_key_patterns:
-                    matches = re.findall(pat, content)
-                    for match in matches:
-                        match_lower = match.lower()
-                        if not any(term in match_lower for term in bad_terms) and len(match) >= 32:
-                            delta_key = match
-                            break
-                    if delta_key: break
+            valid_key_patterns = [
+                r'FREE_[A-Za-z0-9]{30,}',
+                r'PREMIUM_[A-Za-z0-9]{30,}',
+                r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+                r'\b[A-F0-9a-f]{64}\b'
+            ]
+            bad_words = ["cloudflare", "insights", "analytics", "cdn", "v4513226", "sha256", "uuid"]
+
+            for pat in valid_key_patterns:
+                matches = re.findall(pat, all_text)
+                for m in matches:
+                    if len(m) < 32:
+                        continue
+                    if any(b in m.lower() for b in bad_words):
+                        continue
+                    delta_key = m
+                    break
+                if delta_key:
+                    break
 
             return {
                 "ok": True,
                 "final_url": current_url,
+                "is_delta_link": is_delta_link,
+                "time_remaining": time_left,
                 "delta_key": delta_key,
-                "main_text": re.sub(r'<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<[^>]+>', '', content).strip()
+                "clean_text": all_text[:800]
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -774,7 +770,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
                 description=f"An error occurred:\n```{result.get('error', 'Unknown error')}```",
                 color=0xe74c3c
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         delta_key = result.get("delta_key")
@@ -788,9 +784,11 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
             description=f"**Final URL:** {result['final_url']}\n\n**Delta Key:** {key_display}",
             color=0x3498db
         )
+        if result.get("time_remaining"):
+            embed.add_field(name="⏱️ Time Remaining", value=result["time_remaining"], inline=False)
         embed.add_field(
             name="Page Preview",
-            value=result["main_text"][:500] + ("..." if len(result["main_text"]) > 500 else ""),
+            value=result.get("clean_text", "No text extracted.")[:500] + ("..." if len(result.get("clean_text", "")) > 500 else ""),
             inline=False
         )
 
@@ -816,7 +814,7 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
             description=f"An unexpected error occurred:\n```{str(e)}```",
             color=0xe74c3c
         )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.event
 async def on_ready():
