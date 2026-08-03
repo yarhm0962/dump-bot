@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 from urllib.parse import urlparse, parse_qs
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timedelta
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -45,6 +45,7 @@ settings_col = None
 logs_col = None
 tickets_col = None
 ticket_panels_col = None
+giveaways_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -54,6 +55,7 @@ try:
     logs_col = db["usage_logs"]
     tickets_col = db["tickets"]
     ticket_panels_col = db["ticket_panels"]
+    giveaways_col = db["giveaways"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -1193,6 +1195,302 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
+# ========== GIVEAWAY SYSTEM ==========
+
+def parse_time_string(time_str: str) -> int:
+    time_str = time_str.strip().lower()
+    match = re.match(r'(\d+)\s*(m|min|h|hr|d|day|w|week|mon|month|y|year)', time_str)
+    if not match:
+        raise ValueError("Invalid time format. Use like: 10m, 2h, 1d, 1w, 1mon, 1y")
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit in ['m', 'min']:
+        return value * 60
+    elif unit in ['h', 'hr']:
+        return value * 3600
+    elif unit in ['d', 'day']:
+        return value * 86400
+    elif unit in ['w', 'week']:
+        return value * 604800
+    elif unit in ['mon', 'month']:
+        return value * 2592000
+    elif unit in ['y', 'year']:
+        return value * 31536000
+    else:
+        raise ValueError("Unknown unit")
+
+class GiveawayConfirmLeave(discord.ui.View):
+    def __init__(self, giveaway_id, user_id):
+        super().__init__(timeout=60)
+        self.giveaway_id = giveaway_id
+        self.user_id = user_id
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
+            return
+        giveaway = giveaways_col.find_one({"_id": ObjectId(self.giveaway_id)})
+        if not giveaway or giveaway['status'] != 'active':
+            await interaction.response.send_message("This giveaway is no longer active.", ephemeral=True)
+            return
+        if interaction.user.id not in giveaway['participants']:
+            await interaction.response.send_message("You are not in this giveaway.", ephemeral=True)
+            return
+        giveaways_col.update_one({"_id": ObjectId(self.giveaway_id)}, {"$pull": {"participants": interaction.user.id}})
+        await interaction.response.send_message("✅ You have left the giveaway.", ephemeral=True)
+        # Update embed
+        await update_giveaway_embed(giveaway)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
+            return
+        await interaction.response.send_message("Cancelled.", ephemeral=True)
+
+class GiveawayView(discord.ui.View):
+    def __init__(self, giveaway_id):
+        super().__init__(timeout=None)
+        self.giveaway_id = giveaway_id
+
+    @discord.ui.button(label="Click to Join", style=discord.ButtonStyle.blurple, emoji="👤", custom_id="giveaway_join")
+    async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
+        giveaway = giveaways_col.find_one({"_id": ObjectId(self.giveaway_id)})
+        if not giveaway:
+            await interaction.response.send_message("This giveaway no longer exists.", ephemeral=True)
+            return
+        if giveaway['status'] != 'active':
+            await interaction.response.send_message("This giveaway has ended.", ephemeral=True)
+            return
+        if interaction.user.id in giveaway['participants']:
+            # Already entered - show leave confirmation
+            view = GiveawayConfirmLeave(self.giveaway_id, interaction.user.id)
+            embed = discord.Embed(
+                title="❌ Do you want to leave the Giveaway?",
+                description="Click Confirm to leave, or Cancel to stay.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+        # Add user
+        giveaways_col.update_one({"_id": ObjectId(self.giveaway_id)}, {"$push": {"participants": interaction.user.id}})
+        await interaction.response.send_message("🎉 You've entered the giveaway", ephemeral=True)
+        await update_giveaway_embed(giveaway)
+
+async def update_giveaway_embed(giveaway):
+    channel = bot.get_channel(giveaway['channel_id'])
+    if not channel:
+        return
+    try:
+        message = await channel.fetch_message(giveaway['message_id'])
+    except:
+        return
+    participants = giveaway['participants']
+    count = len(participants)
+    end_time = giveaway['end_time']
+    now = datetime.utcnow()
+    time_left = end_time - now
+    if time_left.total_seconds() <= 0:
+        time_str = "Ended"
+    else:
+        days = time_left.days
+        hours, rem = divmod(time_left.seconds, 3600)
+        minutes, _ = divmod(rem, 60)
+        parts = []
+        if days: parts.append(f"{days}d")
+        if hours: parts.append(f"{hours}h")
+        if minutes: parts.append(f"{minutes}m")
+        time_str = " ".join(parts) if parts else "Soon"
+    desc = giveaway['description']
+    desc = desc.replace("<count>", str(count)).replace("<number of winners>", str(giveaway['winners_count']))
+    desc = desc.replace("<set your date/time here>", time_str)
+    embed = discord.Embed(
+        title=giveaway['title'],
+        description=desc,
+        color=discord.Color.blurple()
+    )
+    if giveaway.get('image'):
+        embed.set_image(url=giveaway['image'])
+    footer_text = giveaway['footer']
+    embed.set_footer(text=footer_text)
+    await message.edit(embed=embed)
+
+async def end_giveaway(giveaway_id):
+    giveaway = giveaways_col.find_one({"_id": ObjectId(giveaway_id)})
+    if not giveaway or giveaway['status'] != 'active':
+        return
+    participants = giveaway['participants']
+    winners_count = giveaway['winners_count']
+    channel = bot.get_channel(giveaway['channel_id'])
+    if not channel:
+        return
+    try:
+        message = await channel.fetch_message(giveaway['message_id'])
+    except:
+        return
+    # Pick winners
+    winners = []
+    if participants:
+        shuffled = participants.copy()
+        random.shuffle(shuffled)
+        winners = shuffled[:winners_count]
+    # Update status
+    giveaways_col.update_one({"_id": ObjectId(giveaway_id)}, {"$set": {"status": "ended"}})
+    # Update embed: disable button
+    view = GiveawayView(giveaway_id)
+    for item in view.children:
+        item.disabled = True
+    # Edit embed to show ended
+    desc = giveaway['description']
+    desc = desc.replace("<count>", str(len(participants))).replace("<number of winners>", str(winners_count))
+    desc += "\n\n**Giveaway has ended!**"
+    embed = discord.Embed(
+        title=giveaway['title'],
+        description=desc,
+        color=discord.Color.dark_blue()
+    )
+    if giveaway.get('image'):
+        embed.set_image(url=giveaway['image'])
+    footer_text = giveaway['footer']
+    embed.set_footer(text=footer_text)
+    await message.edit(embed=embed, view=view)
+    # Send winner message
+    if winners:
+        winner_mentions = " ".join([f"<@{uid}>" for uid in winners])
+        win_embed = discord.Embed(
+            title="🎉 Congratulations!",
+            description="You are the winner of the Giveaway.",
+            color=discord.Color.light_blue()
+        )
+        await channel.send(content=winner_mentions, embed=win_embed)
+    else:
+        await channel.send("No participants, no winners.")
+
+async def schedule_giveaway_end(giveaway_id, end_time):
+    now = datetime.utcnow()
+    delta = (end_time - now).total_seconds()
+    if delta > 0:
+        await asyncio.sleep(delta)
+    await end_giveaway(giveaway_id)
+
+@bot.tree.command(name="giveaway", description="Start a new giveaway")
+@app_commands.describe(
+    winners="Number of winners (max 100)",
+    time="Duration (e.g., 10m, 2h, 1d, 1w, 1mon, 1y)",
+    max_users="Maximum participants (optional, no limit if not set)",
+    title="Giveaway title (default: 🎉 Giveaway!!)",
+    description="Giveaway description (default: standard template)",
+    footer="Footer text (default: Hosted by <user> • <creation time>)",
+    image="Image URL to display in embed"
+)
+@app_commands.default_permissions(administrator=True)
+async def giveaway_command(
+    interaction: discord.Interaction,
+    winners: int,
+    time: str,
+    max_users: int = None,
+    title: str = "🎉 Giveaway!!",
+    description: str = None,
+    footer: str = None,
+    image: str = None
+):
+    if winners < 1:
+        await interaction.response.send_message("Winners must be at least 1.", ephemeral=True)
+        return
+    if winners > 100:
+        await interaction.response.send_message("Winners cannot exceed 100.", ephemeral=True)
+        return
+    try:
+        seconds = parse_time_string(time)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+    if seconds <= 0:
+        await interaction.response.send_message("Time must be positive.", ephemeral=True)
+        return
+    end_time = datetime.utcnow() + timedelta(seconds=seconds)
+
+    if description is None:
+        description = (
+            "🎁 Enter to win amazing prizes!\n"
+            "✅ Click the button below to join\n"
+            "⏰ Ends: <set your date/time here>\n"
+            "👥 Total Participants: <count>\n"
+            "🏆 Winners: <number of winners>\n\n"
+            "No fake entries, one entry per person only. Good luck everyone!"
+        )
+    if footer is None:
+        footer = f"Hosted by {interaction.user} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+
+    # Create embed
+    desc = description.replace("<count>", "0").replace("<number of winners>", str(winners))
+    desc = desc.replace("<set your date/time here>", "Calculating...")
+    embed = discord.Embed(
+        title=title,
+        description=desc,
+        color=discord.Color.blurple()
+    )
+    if image:
+        embed.set_image(url=image)
+    embed.set_footer(text=footer)
+
+    view = GiveawayView("placeholder")  # will be replaced after insert
+    # But we need to send first to get message id, then update view with actual id
+    # We'll create a placeholder view then edit later.
+    placeholder_view = discord.ui.View()
+    placeholder_view.add_item(discord.ui.Button(label="Loading...", disabled=True))
+    await interaction.response.send_message("Creating giveaway...", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed, view=placeholder_view)
+
+    # Insert into DB
+    giveaway_doc = {
+        "guild_id": interaction.guild.id,
+        "channel_id": interaction.channel.id,
+        "message_id": msg.id,
+        "winners_count": winners,
+        "end_time": end_time,
+        "title": title,
+        "description": description,
+        "footer": footer,
+        "image": image,
+        "participants": [],
+        "status": "active",
+        "host_id": interaction.user.id,
+        "created_at": datetime.utcnow(),
+        "max_users": max_users
+    }
+    result = giveaways_col.insert_one(giveaway_doc)
+    giveaway_id = str(result.inserted_id)
+
+    # Update view with real id
+    view = GiveawayView(giveaway_id)
+    await msg.edit(view=view)
+    bot.add_view(view, message_id=msg.id)
+
+    # Schedule end
+    asyncio.create_task(schedule_giveaway_end(giveaway_id, end_time))
+
+    await interaction.edit_original_response(content="✅ Giveaway created successfully!")
+
+# Load active giveaways on startup
+async def load_giveaways():
+    if giveaways_col is None:
+        return
+    active = giveaways_col.find({"status": "active"})
+    for g in active:
+        gid = str(g['_id'])
+        view = GiveawayView(gid)
+        bot.add_view(view, message_id=g['message_id'])
+        end_time = g['end_time']
+        if datetime.utcnow() >= end_time:
+            # End immediately
+            asyncio.create_task(end_giveaway(gid))
+        else:
+            asyncio.create_task(schedule_giveaway_end(gid, end_time))
+
+# ========== END GIVEAWAY ==========
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -1217,9 +1515,12 @@ async def on_ready():
         )
         bot.add_view(view)
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /bypass | /ticket"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /bypass | /ticket | /giveaway"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
+
+    # Load giveaways
+    await load_giveaways()
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
@@ -1288,7 +1589,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/bypass` - Bypass Delta Executor URL and extract key\n`/ticket` - Create a ticket panel (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/bypass` - Bypass Delta Executor URL and extract key\n`/ticket` - Create a ticket panel (admin only)\n`/giveaway` - Create a giveaway",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
