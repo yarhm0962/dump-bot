@@ -1328,12 +1328,25 @@ async def end_giveaway(giveaway_id):
             description="🎉 You won the Giveaway.",
             color=discord.Color.light_blue()
         )
+        # Try to send the winner message with embed
         try:
             await channel.send(content=mentions, embed=win_embed)
             print(f"✅ Winner message sent: {mentions}")
         except Exception as e:
-            print(f"❌ Failed to send winner message: {e}")
-            await channel.send(content=mentions + "\n🎉 You won the Giveaway.")
+            print(f"❌ Failed to send winner message with embed: {e}")
+            # Fallback: send plain text
+            try:
+                await channel.send(content=f"{mentions}\n🎉 You won the Giveaway.")
+                print("✅ Winner message sent as plain text")
+            except Exception as e2:
+                print(f"❌ Even plain text failed: {e2}")
+                # Last resort: try to DM the winners
+                for uid in winners:
+                    try:
+                        user = await bot.fetch_user(uid)
+                        await user.send("🎉 You won a giveaway! Check the server for details.")
+                    except:
+                        pass
     else:
         await channel.send("No participants, no winners.")
         print("ℹ️ No winners to announce.")
