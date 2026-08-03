@@ -1319,10 +1319,11 @@ async def end_giveaway(giveaway_id):
             color=discord.Color.light_blue()
         )
         try:
-            await channel.send(content=f"@everyone {mentions}", embed=win_embed)
+            await channel.send(content=mentions, embed=win_embed)
         except Exception as e:
             print(f"Failed to send winner message: {e}")
-            await channel.send(content=mentions, embed=win_embed)
+            # Fallback: try without embed
+            await channel.send(content=mentions + "\n🎉 You won the Giveaway.")
     else:
         await channel.send("No participants, no winners.")
 
