@@ -1195,6 +1195,8 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
+# ========== GIVEAWAY SYSTEM ==========
+
 def parse_time_string(time_str: str) -> int:
     time_str = time_str.strip().lower()
     match = re.match(r'(\d+)\s*(m|min|h|hr|d|day|w|week|mon|month|y|year)', time_str)
@@ -1217,44 +1219,6 @@ def parse_time_string(time_str: str) -> int:
     else:
         raise ValueError("Unknown unit")
 
-class GiveawayConfirmLeave(discord.ui.View):
-    def __init__(self, giveaway_id, user_id):
-        super().__init__(timeout=60)
-        self.giveaway_id = giveaway_id
-        self.user_id = user_id
-
-    async def disable_buttons(self, interaction: discord.Interaction):
-        for child in self.children:
-            child.disabled = True
-        await interaction.edit_original_response(view=self)
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
-    async def confirm_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
-            return
-        giveaway = giveaways_col.find_one({"_id": ObjectId(self.giveaway_id)})
-        if not giveaway or giveaway['status'] != 'active':
-            await interaction.response.send_message("This giveaway is no longer active.", ephemeral=True)
-            await self.disable_buttons(interaction)
-            return
-        if interaction.user.id not in giveaway['participants']:
-            await interaction.response.send_message("You are not in this giveaway.", ephemeral=True)
-            await self.disable_buttons(interaction)
-            return
-        giveaways_col.update_one({"_id": ObjectId(self.giveaway_id)}, {"$pull": {"participants": interaction.user.id}})
-        await interaction.response.send_message("✅ You have left the giveaway.", ephemeral=True)
-        await self.disable_buttons(interaction)
-        await update_giveaway_embed(giveaway)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
-            return
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
-        await self.disable_buttons(interaction)
-
 class GiveawayView(discord.ui.View):
     def __init__(self, giveaway_id):
         super().__init__(timeout=None)
@@ -1273,13 +1237,7 @@ class GiveawayView(discord.ui.View):
             await interaction.response.send_message("❌ This giveaway has reached its maximum participant limit.", ephemeral=True)
             return
         if interaction.user.id in giveaway['participants']:
-            view = GiveawayConfirmLeave(self.giveaway_id, interaction.user.id)
-            embed = discord.Embed(
-                title="❌ Do you want to leave the Giveaway?",
-                description="Click Confirm to leave, or Cancel to stay.",
-                color=discord.Color.red()
-            )
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await interaction.response.send_message("❌ You can't leave this Giveaway.", ephemeral=True)
             return
         giveaways_col.update_one({"_id": ObjectId(self.giveaway_id)}, {"$push": {"participants": interaction.user.id}})
         await interaction.response.send_message("🎉 You've entered the giveaway", ephemeral=True)
@@ -1297,20 +1255,15 @@ async def update_giveaway_embed(giveaway):
     count = len(participants)
     end_time = giveaway['end_time']
     now = datetime.utcnow()
-    time_left = end_time - now
-    if time_left.total_seconds() <= 0:
-        time_str = "Ended"
+    unix_ts = int(end_time.timestamp())
+    if end_time > now:
+        relative = f"<t:{unix_ts}:R>"
+        full = f"<t:{unix_ts}:F>"
+        time_display = f"{relative} ({full})"
     else:
-        days = time_left.days
-        hours, rem = divmod(time_left.seconds, 3600)
-        minutes, _ = divmod(rem, 60)
-        parts = []
-        if days: parts.append(f"{days}d")
-        if hours: parts.append(f"{hours}h")
-        if minutes: parts.append(f"{minutes}m")
-        time_str = " ".join(parts) if parts else "Soon"
+        time_display = "Ended"
     user_desc = giveaway['description']
-    extra_lines = f"\n\n⏰ Ends: {time_str}\n👥 Total Participants: {count}\n🏆 Winners: {giveaway['winners_count']}"
+    extra_lines = f"\n\n⏰ Ends: {time_display}\n👥 Total Participants: {count}\n🏆 Winners: {giveaway['winners_count']}"
     full_desc = user_desc + extra_lines
     embed = discord.Embed(
         title=giveaway['title'],
@@ -1359,13 +1312,12 @@ async def end_giveaway(giveaway_id):
     embed.set_footer(text=footer_text)
     await message.edit(embed=embed, view=view)
     if winners:
-        winner_mentions = " ".join([f"<@{uid}>" for uid in winners])
+        mentions = " ".join([f"<@{uid}>" for uid in winners])
         win_embed = discord.Embed(
-            title="🎉 Congratulations!",
-            description="You are the winner of the Giveaway.",
+            description="🎉 You won the Giveaway.",
             color=discord.Color.light_blue()
         )
-        await channel.send(content=winner_mentions, embed=win_embed)
+        await channel.send(content=f"@everyone {mentions}", embed=win_embed)
     else:
         await channel.send("No participants, no winners.")
 
@@ -1462,6 +1414,8 @@ async def load_giveaways():
             asyncio.create_task(end_giveaway(gid))
         else:
             asyncio.create_task(schedule_giveaway_end(gid, end_time))
+
+# ========== END GIVEAWAY ==========
 
 @bot.event
 async def on_ready():
