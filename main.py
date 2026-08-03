@@ -1195,8 +1195,6 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
-# ========== GIVEAWAY SYSTEM ==========
-
 def parse_time_string(time_str: str) -> int:
     time_str = time_str.strip().lower()
     match = re.match(r'(\d+)\s*(m|min|h|hr|d|day|w|week|mon|month|y|year)', time_str)
@@ -1271,12 +1269,10 @@ class GiveawayView(discord.ui.View):
         if giveaway['status'] != 'active':
             await interaction.response.send_message("This giveaway has ended.", ephemeral=True)
             return
-        # Check max users limit
         if giveaway.get('max_users') and len(giveaway['participants']) >= giveaway['max_users']:
             await interaction.response.send_message("❌ This giveaway has reached its maximum participant limit.", ephemeral=True)
             return
         if interaction.user.id in giveaway['participants']:
-            # Already entered - show leave confirmation
             view = GiveawayConfirmLeave(self.giveaway_id, interaction.user.id)
             embed = discord.Embed(
                 title="❌ Do you want to leave the Giveaway?",
@@ -1285,7 +1281,6 @@ class GiveawayView(discord.ui.View):
             )
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
-        # Add user
         giveaways_col.update_one({"_id": ObjectId(self.giveaway_id)}, {"$push": {"participants": interaction.user.id}})
         await interaction.response.send_message("🎉 You've entered the giveaway", ephemeral=True)
         await update_giveaway_embed(giveaway)
@@ -1314,7 +1309,6 @@ async def update_giveaway_embed(giveaway):
         if hours: parts.append(f"{hours}h")
         if minutes: parts.append(f"{minutes}m")
         time_str = " ".join(parts) if parts else "Soon"
-    # Build description: user description + extra lines
     user_desc = giveaway['description']
     extra_lines = f"\n\n⏰ Ends: {time_str}\n👥 Total Participants: {count}\n🏆 Winners: {giveaway['winners_count']}"
     full_desc = user_desc + extra_lines
@@ -1342,19 +1336,15 @@ async def end_giveaway(giveaway_id):
         message = await channel.fetch_message(giveaway['message_id'])
     except:
         return
-    # Pick winners
     winners = []
     if participants:
         shuffled = participants.copy()
         random.shuffle(shuffled)
         winners = shuffled[:winners_count]
-    # Update status
     giveaways_col.update_one({"_id": ObjectId(giveaway_id)}, {"$set": {"status": "ended"}})
-    # Update embed: disable button
     view = GiveawayView(giveaway_id)
     for item in view.children:
         item.disabled = True
-    # Edit embed to show ended
     user_desc = giveaway['description']
     extra_lines = f"\n\n⏰ Ends: Ended\n👥 Total Participants: {len(participants)}\n🏆 Winners: {winners_count}\n\n**Giveaway has ended!**"
     full_desc = user_desc + extra_lines
@@ -1368,7 +1358,6 @@ async def end_giveaway(giveaway_id):
     footer_text = giveaway['footer']
     embed.set_footer(text=footer_text)
     await message.edit(embed=embed, view=view)
-    # Send winner message
     if winners:
         winner_mentions = " ".join([f"<@{uid}>" for uid in winners])
         win_embed = discord.Embed(
@@ -1429,18 +1418,11 @@ async def giveaway_command(
     if footer is None:
         footer = f"Hosted by {interaction.user} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
 
-    # Build initial embed with placeholder lines
-    # We'll show "Ends: ..." as calculating initially, will be updated by update function
-    # But we set the embed with placeholder description, then after message sent, update it.
-    # Better: just create a simple embed and update immediately.
-    # We'll set initial embed with placeholders, then call update_giveaway_embed after insertion.
-    # We'll send message with a loading button, then edit.
     placeholder_view = discord.ui.View()
     placeholder_view.add_item(discord.ui.Button(label="Loading...", disabled=True))
     await interaction.response.send_message("Creating giveaway...", ephemeral=True)
     msg = await interaction.channel.send(embed=discord.Embed(title=title, description="Loading...", color=discord.Color.blurple()), view=placeholder_view)
 
-    # Insert into DB
     giveaway_doc = {
         "guild_id": interaction.guild.id,
         "channel_id": interaction.channel.id,
@@ -1460,25 +1442,13 @@ async def giveaway_command(
     result = giveaways_col.insert_one(giveaway_doc)
     giveaway_id = str(result.inserted_id)
 
-    # Update view with real id
     view = GiveawayView(giveaway_id)
     await msg.edit(view=view)
-
-    # Update embed with proper info
-    await update_giveaway_embed(giveaway_doc)  # but we need to pass the doc with _id? Actually we can pass the doc we have, but we need to query again to get the updated participants (empty).
-    # Let's just call update_giveaway_embed with the doc we have, but it needs the db doc; we can fetch it.
-    # Simpler: call update_giveaway_embed after we have the doc, but it will query again.
-    # We'll just call it with the doc we have, but it expects a dict with keys. It will work.
     await update_giveaway_embed(giveaway_doc)
-
     bot.add_view(view, message_id=msg.id)
-
-    # Schedule end
     asyncio.create_task(schedule_giveaway_end(giveaway_id, end_time))
-
     await interaction.edit_original_response(content="✅ Giveaway created successfully!")
 
-# Load active giveaways on startup
 async def load_giveaways():
     if giveaways_col is None:
         return
@@ -1492,8 +1462,6 @@ async def load_giveaways():
             asyncio.create_task(end_giveaway(gid))
         else:
             asyncio.create_task(schedule_giveaway_end(gid, end_time))
-
-# ========== END GIVEAWAY ==========
 
 @bot.event
 async def on_ready():
@@ -1523,7 +1491,6 @@ async def on_ready():
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
-    # Load giveaways
     await load_giveaways()
 
 @bot.group(name="db", invoke_without_command=True)
