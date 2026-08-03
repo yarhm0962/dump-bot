@@ -1333,7 +1333,6 @@ async def end_giveaway(giveaway_id):
             print(f"✅ Winner message sent: {mentions}")
         except Exception as e:
             print(f"❌ Failed to send winner message: {e}")
-            # Fallback: send plain text
             await channel.send(content=mentions + "\n🎉 You won the Giveaway.")
     else:
         await channel.send("No participants, no winners.")
@@ -1348,6 +1347,23 @@ async def schedule_giveaway_end(giveaway_id, end_time):
     else:
         print(f"⚠️ Giveaway {giveaway_id} already past end time, ending now.")
     await end_giveaway(giveaway_id)
+
+# Background checker to catch any missed ended giveaways
+async def giveaway_checker():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            if giveaways_col is not None:
+                now = datetime.utcnow()
+                active = giveaways_col.find({"status": "active"})
+                for g in active:
+                    if g['end_time'] <= now:
+                        gid = str(g['_id'])
+                        print(f"🔄 Checker found ended giveaway {gid}, ending...")
+                        asyncio.create_task(end_giveaway(gid))
+        except Exception as e:
+            print(f"❌ Checker error: {e}")
+        await asyncio.sleep(60)  # check every minute
 
 @bot.tree.command(name="giveaway", description="Start a new giveaway")
 @app_commands.describe(
@@ -1467,6 +1483,8 @@ async def on_ready():
         print(f"✅ Database Ready: {db.name}")
 
     await load_giveaways()
+    # Start background checker
+    bot.loop.create_task(giveaway_checker())
 
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
