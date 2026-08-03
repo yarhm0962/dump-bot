@@ -1288,7 +1288,7 @@ async def end_giveaway(giveaway_id):
     try:
         message = await channel.fetch_message(giveaway['message_id'])
     except:
-        return
+        message = None
     winners = []
     if participants:
         shuffled = participants.copy()
@@ -1310,14 +1310,19 @@ async def end_giveaway(giveaway_id):
         embed.set_image(url=giveaway['image'])
     footer_text = giveaway['footer']
     embed.set_footer(text=footer_text)
-    await message.edit(embed=embed, view=view)
+    if message:
+        await message.edit(embed=embed, view=view)
     if winners:
         mentions = " ".join([f"<@{uid}>" for uid in winners])
         win_embed = discord.Embed(
             description="🎉 You won the Giveaway.",
             color=discord.Color.light_blue()
         )
-        await channel.send(content=f"@everyone {mentions}", embed=win_embed)
+        try:
+            await channel.send(content=f"@everyone {mentions}", embed=win_embed)
+        except Exception as e:
+            print(f"Failed to send winner message: {e}")
+            await channel.send(content=mentions, embed=win_embed)
     else:
         await channel.send("No participants, no winners.")
 
