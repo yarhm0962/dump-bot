@@ -1277,23 +1277,33 @@ async def update_giveaway_embed(giveaway):
     await message.edit(embed=embed)
 
 async def end_giveaway(giveaway_id):
+    print(f"⚡ Ending giveaway: {giveaway_id}")
     giveaway = giveaways_col.find_one({"_id": ObjectId(giveaway_id)})
-    if not giveaway or giveaway['status'] != 'active':
+    if not giveaway:
+        print(f"❌ Giveaway not found: {giveaway_id}")
+        return
+    if giveaway['status'] != 'active':
+        print(f"⚠️ Giveaway already ended: {giveaway_id}")
         return
     participants = giveaway['participants']
     winners_count = giveaway['winners_count']
     channel = bot.get_channel(giveaway['channel_id'])
     if not channel:
+        print(f"❌ Channel not found for giveaway {giveaway_id}")
         return
     try:
         message = await channel.fetch_message(giveaway['message_id'])
-    except:
+    except Exception as e:
+        print(f"❌ Could not fetch message: {e}")
         message = None
     winners = []
     if participants:
         shuffled = participants.copy()
         random.shuffle(shuffled)
         winners = shuffled[:winners_count]
+        print(f"🎯 Winners selected: {winners}")
+    else:
+        print("ℹ️ No participants")
     giveaways_col.update_one({"_id": ObjectId(giveaway_id)}, {"$set": {"status": "ended"}})
     view = GiveawayView(giveaway_id)
     for item in view.children:
@@ -1320,18 +1330,23 @@ async def end_giveaway(giveaway_id):
         )
         try:
             await channel.send(content=mentions, embed=win_embed)
+            print(f"✅ Winner message sent: {mentions}")
         except Exception as e:
-            print(f"Failed to send winner message: {e}")
-            # Fallback: try without embed
+            print(f"❌ Failed to send winner message: {e}")
+            # Fallback: send plain text
             await channel.send(content=mentions + "\n🎉 You won the Giveaway.")
     else:
         await channel.send("No participants, no winners.")
+        print("ℹ️ No winners to announce.")
 
 async def schedule_giveaway_end(giveaway_id, end_time):
     now = datetime.utcnow()
     delta = (end_time - now).total_seconds()
     if delta > 0:
+        print(f"⏳ Giveaway {giveaway_id} ends in {delta} seconds")
         await asyncio.sleep(delta)
+    else:
+        print(f"⚠️ Giveaway {giveaway_id} already past end time, ending now.")
     await end_giveaway(giveaway_id)
 
 @bot.tree.command(name="giveaway", description="Start a new giveaway")
