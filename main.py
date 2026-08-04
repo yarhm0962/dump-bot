@@ -492,10 +492,10 @@ async def active_checker_loop(guild_id, channel_id, interval_seconds):
 
             embed = discord.Embed(
                 title="🟢 Active Check",
-                description="🟢 Active Check. I just want to check y'all if you are Active. Please react so we know if you are Active.",
+                description="Active check. I just want y'all to check if you are Active. React so we know if y'all is Active.",
                 color=0x1e90ff
             )
-            embed.set_footer(text="Active Checker")
+            embed.set_footer(text="Powered by MonLua Bot")
             msg = await channel.send(content="@everyone", embed=embed)
             await msg.add_reaction("✅")
 
@@ -522,19 +522,16 @@ async def active_checker(
         return
 
     guild_id = interaction.guild.id
-    # Save config
     active_checker_col.update_one(
         {"guild_id": guild_id},
         {"$set": {"channel_id": channel.id, "interval": interval}},
         upsert=True
     )
 
-    # Cancel existing task if any
     if guild_id in active_checker_tasks:
         active_checker_tasks[guild_id].cancel()
         del active_checker_tasks[guild_id]
 
-    # Start new task
     task = asyncio.create_task(active_checker_loop(guild_id, channel.id, interval))
     active_checker_tasks[guild_id] = task
 
