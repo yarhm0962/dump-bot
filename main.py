@@ -45,6 +45,7 @@ settings_col = None
 logs_col = None
 tickets_col = None
 ticket_panels_col = None
+verification_config_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -54,12 +55,14 @@ try:
     logs_col = db["usage_logs"]
     tickets_col = db["tickets"]
     ticket_panels_col = db["ticket_panels"]
+    verification_config_col = db["verification_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 def get_allowed_channel():
@@ -665,6 +668,8 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
+# ========== TICKET SYSTEM ==========
+
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
         super().__init__(timeout=None)
@@ -1030,6 +1035,181 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
+# ========== VERIFICATION SYSTEM ==========
+
+class VerifyView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        button = discord.ui.Button(
+            label="Verify",
+            style=discord.ButtonStyle.green,
+            emoji="👤",
+            custom_id=f"verify_{guild_id}"
+        )
+        button.callback = self.verify_callback
+        self.add_item(button)
+
+    async def verify_callback(self, interaction: discord.Interaction):
+        config = verification_config_col.find_one({"guild_id": interaction.guild.id})
+        if not config:
+            await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
+            return
+
+        not_verified_role_id = config["not_verified_role_id"]
+        verified_role_id = config["verified_role_id"]
+
+        not_verified_role = interaction.guild.get_role(not_verified_role_id)
+        verified_role = interaction.guild.get_role(verified_role_id)
+
+        if not not_verified_role or not verified_role:
+            await interaction.response.send_message("❌ Roles are missing. Contact an admin.", ephemeral=True)
+            return
+
+        if not_verified_role not in interaction.user.roles:
+            await interaction.response.send_message("✅ You are already verified.", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.remove_roles(not_verified_role, reason="User verified")
+            await interaction.user.add_roles(verified_role, reason="User verified")
+            await interaction.response.send_message("✅ You have been verified!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to manage your roles. Contact an admin.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="verify_system", description="Set up the verification system")
+@app_commands.describe(
+    select_role="The role to give upon verification",
+    channel="The channel where the verification message will be sent"
+)
+@app_commands.default_permissions(administrator=True)
+async def verify_system(
+    interaction: discord.Interaction,
+    select_role: discord.Role,
+    channel: discord.TextChannel
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    # 1. Create or get "Not Verified" role
+    not_verified_role = discord.utils.get(guild.roles, name="Not Verified")
+    if not not_verified_role:
+        try:
+            not_verified_role = await guild.create_role(
+                name="Not Verified",
+                reason="Verification system role",
+                hoist=False,
+                mentionable=False
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to create roles.", ephemeral=True)
+            return
+
+    # 2. Set up channel permissions for all channels
+    # We need to deny view_channel for Not Verified role on all channels except the verification channel.
+    # Allow view_channel for select_role on all channels except verification channel.
+    # For verification channel: allow view_channel for Not Verified, deny send_messages, deny create threads.
+    # Also deny view_channel for select_role on verification channel.
+
+    # We'll do this in batches to avoid rate limits.
+    async def update_channel_perms(channel_obj):
+        if channel_obj == channel:
+            # Verification channel permissions
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                not_verified_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=False,
+                    create_public_threads=False,
+                    create_private_threads=False
+                ),
+                select_role: discord.PermissionOverwrite(view_channel=False)
+            }
+        else:
+            # All other channels
+            overwrites = {
+                not_verified_role: discord.PermissionOverwrite(view_channel=False),
+                select_role: discord.PermissionOverwrite(view_channel=True)
+            }
+        try:
+            await channel_obj.edit(overwrites=overwrites)
+        except discord.Forbidden:
+            pass  # Skip if we can't edit
+
+    # Apply to all text channels and categories? We'll apply to all channel types.
+    sem = asyncio.Semaphore(10)  # Limit concurrent edits
+
+    async def apply_permissions(ch):
+        async with sem:
+            try:
+                await update_channel_perms(ch)
+            except Exception as e:
+                print(f"Failed to update permissions for {ch.name}: {e}")
+
+    tasks = [apply_permissions(ch) for ch in guild.channels]
+    await asyncio.gather(*tasks)
+
+    # 3. Assign Not Verified role to all members (except bots)
+    members_assigned = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if not_verified_role not in member.roles:
+            try:
+                await member.add_roles(not_verified_role, reason="Verification system initialization")
+                members_assigned += 1
+                if members_assigned % 10 == 0:
+                    await asyncio.sleep(0.5)  # Avoid rate limits
+            except discord.Forbidden:
+                continue
+            except Exception as e:
+                print(f"Error adding role to {member}: {e}")
+
+    # 4. Create embed
+    embed = discord.Embed(
+        title="Server Verification",
+        description=(
+            "Welcome to the server! We are glad to have you here.\n\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the **Verify** button below.\n"
+            "This helps us keep the server safe and secure.\n\n"
+            "**Verification System**"
+        ),
+        color=0x1e90ff  # Light Blue
+    )
+    embed.set_footer(text="Verification System")
+
+    # 5. Send the embed with the verify button
+    view = VerifyView(guild.id)
+    msg = await channel.send(embed=embed, view=view)
+    bot.add_view(view, message_id=msg.id)
+
+    # 6. Store config in MongoDB
+    config_data = {
+        "guild_id": guild.id,
+        "not_verified_role_id": not_verified_role.id,
+        "verified_role_id": select_role.id,
+        "channel_id": channel.id,
+        "message_id": msg.id
+    }
+    verification_config_col.update_one(
+        {"guild_id": guild.id},
+        {"$set": config_data},
+        upsert=True
+    )
+
+    await interaction.followup.send(
+        f"✅ Verification system set up!\n"
+        f"Not Verified role: {not_verified_role.mention}\n"
+        f"Verified role: {select_role.mention}\n"
+        f"Verification channel: {channel.mention}\n"
+        f"Assigned Not Verified role to {members_assigned} members.",
+        ephemeral=True
+    )
+
+# ========== END VERIFICATION ==========
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -1039,6 +1219,7 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
+    # Load ticket panels
     panels = ticket_panels_col.find()
     for panel in panels:
         panel_id = str(panel["_id"])
@@ -1054,7 +1235,25 @@ async def on_ready():
         )
         bot.add_view(view)
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket"))
+    # Load verification messages
+    configs = verification_config_col.find()
+    for config in configs:
+        guild_id = config["guild_id"]
+        channel_id = config["channel_id"]
+        message_id = config["message_id"]
+        guild = bot.get_guild(guild_id)
+        if guild:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    view = VerifyView(guild_id)
+                    await msg.edit(view=view)
+                    bot.add_view(view, message_id=message_id)
+                except:
+                    pass
+
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -1125,7 +1324,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
