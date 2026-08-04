@@ -210,6 +210,34 @@ def get_level_up_embed(user, level, guild, roles_added=None):
     embed.set_footer(text=footer)
     return embed
 
+async def apply_roles_for_level(guild, level, old_role_ids, new_role_ids):
+    if not guild.me.guild_permissions.manage_roles:
+        return
+    old_roles = [guild.get_role(rid) for rid in old_role_ids if guild.get_role(rid)]
+    new_roles = [guild.get_role(rid) for rid in new_role_ids if guild.get_role(rid)]
+    if not new_roles and not old_roles:
+        return
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        data = await get_user_xp(guild.id, member.id)
+        if data["level"] == level:
+            changes = []
+            if old_roles:
+                to_remove = [r for r in old_roles if r in member.roles]
+                if to_remove:
+                    changes.append(member.remove_roles(*to_remove, reason=f"Level {level} roles updated"))
+            if new_roles:
+                to_add = [r for r in new_roles if r not in member.roles]
+                if to_add:
+                    changes.append(member.add_roles(*to_add, reason=f"Level {level} roles updated"))
+            if changes:
+                try:
+                    await asyncio.gather(*changes)
+                except discord.Forbidden:
+                    pass
+                await asyncio.sleep(0.3)
+
 class LevelConfigView(discord.ui.View):
     def __init__(self, guild, level, channel_id, is_update=False, enabled=True):
         super().__init__(timeout=120)
@@ -258,8 +286,11 @@ class LevelConfigView(discord.ui.View):
         else:
             level_roles = {}
             enabled = self.enabled
+        old_role_ids = level_roles.get(str(self.level), [])
         level_roles[str(self.level)] = selected_role_ids
         await set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
+
+        await apply_roles_for_level(self.guild, self.level, old_role_ids, selected_role_ids)
 
         action = "updated" if self.is_update else "saved"
         embed = discord.Embed(
@@ -268,7 +299,7 @@ class LevelConfigView(discord.ui.View):
                         "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
             color=0x1e90ff
         )
-        embed.set_footer(text="You can re-run the command to change roles or toggle the system.")
+        embed.set_footer(text="Roles have been applied to all users at this level.")
         await interaction.response.edit_message(embed=embed, view=None)
 
 @bot.tree.command(name="level_up_system", description="Configure the level-up system")
@@ -2002,6 +2033,47 @@ async def obfuscate_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
+async def apply_roles_to_all_members(guild):
+    if not guild.me.guild_permissions.manage_roles:
+        return
+    config = await get_level_config(guild.id)
+    if not config:
+        return
+    level_roles = config.get("level_roles", {})
+    if not level_roles:
+        return
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        data = await get_user_xp(guild.id, member.id)
+        level = data["level"]
+        if level == 0:
+            continue
+        target_role_ids = level_roles.get(str(level), [])
+        target_roles = [guild.get_role(rid) for rid in target_role_ids if guild.get_role(rid)]
+        current_roles = member.roles
+        to_remove = []
+        for lv, rids in level_roles.items():
+            if lv == "_channel":
+                continue
+            if int(lv) != level:
+                for rid in rids:
+                    role = guild.get_role(rid)
+                    if role and role in current_roles:
+                        to_remove.append(role)
+        to_add = [r for r in target_roles if r not in current_roles]
+        changes = []
+        if to_remove:
+            changes.append(member.remove_roles(*to_remove, reason="Sync level roles"))
+        if to_add:
+            changes.append(member.add_roles(*to_add, reason="Sync level roles"))
+        if changes:
+            try:
+                await asyncio.gather(*changes)
+            except discord.Forbidden:
+                pass
+            await asyncio.sleep(0.3)
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -2052,6 +2124,9 @@ async def on_ready():
                     bot.add_view(view, message_id=message_id)
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
+
+    for guild in bot.guilds:
+        await apply_roles_to_all_members(guild)
 
     active_configs = await asyncio.to_thread(active_checker_col.find)
     for cfg in active_configs:
