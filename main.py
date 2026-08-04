@@ -91,10 +91,17 @@ def get_level_config(guild_id):
         return None
     return doc
 
-def set_level_config(guild_id, channel_id, level_roles):
+def set_level_config(guild_id, channel_id, level_roles, enabled=True):
     level_config_col.update_one(
         {"guild_id": guild_id},
-        {"$set": {"channel_id": channel_id, "level_roles": level_roles}},
+        {"$set": {"channel_id": channel_id, "level_roles": level_roles, "enabled": enabled}},
+        upsert=True
+    )
+
+def update_level_enabled(guild_id, enabled):
+    level_config_col.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"enabled": enabled}},
         upsert=True
     )
 
@@ -225,7 +232,9 @@ class LevelConfigView(discord.ui.View):
         else:
             level_roles = config.get("level_roles", {})
         level_roles[str(self.level)] = selected_role_ids
-        set_level_config(self.guild.id, self.channel_id, level_roles)
+        # Keep enabled status if exists
+        enabled = config.get("enabled", True) if config else True
+        set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
 
         embed = discord.Embed(
             title="✅ Level Configuration Saved",
@@ -233,19 +242,25 @@ class LevelConfigView(discord.ui.View):
                         "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
             color=0x1e90ff
         )
-        embed.set_footer(text="You can re-run the command to change roles.")
+        embed.set_footer(text="You can re-run the command to change roles or toggle the system.")
         await interaction.response.edit_message(embed=embed, view=None)
 
-@bot.tree.command(name="level-up-system", description="Configure the level-up system")
+@bot.tree.command(name="level_up_system", description="Configure the level-up system")
 @app_commands.describe(
     level="The level number (1-10) to configure",
-    select_channel="The channel where level-up announcements will be sent"
+    select_channel="The channel where level-up announcements will be sent",
+    enabled="Enable or disable the level system (optional)"
 )
+@app_commands.choices(enabled=[
+    app_commands.Choice(name="On", value="On"),
+    app_commands.Choice(name="Off", value="Off")
+])
 @app_commands.default_permissions(administrator=True)
 async def level_up_system(
     interaction: discord.Interaction,
     level: int,
-    select_channel: discord.TextChannel
+    select_channel: discord.TextChannel,
+    enabled: app_commands.Choice[str] = None
 ):
     if level < 1 or level > 10:
         await interaction.response.send_message("Level must be between 1 and 10.", ephemeral=True)
@@ -256,12 +271,34 @@ async def level_up_system(
         return
 
     config = get_level_config(interaction.guild.id)
-    if not config:
-        level_roles = {}
-    else:
-        level_roles = config.get("level_roles", {})
-    level_roles["_channel"] = select_channel.id
-    set_level_config(interaction.guild.id, select_channel.id, level_roles)
+    if config:
+        # If enabled parameter is provided, just update enabled status
+        if enabled is not None:
+            new_status = True if enabled.value == "On" else False
+            update_level_enabled(interaction.guild.id, new_status)
+            status_text = "enabled" if new_status else "disabled"
+            embed = discord.Embed(
+                title="✅ Level System Updated",
+                description=f"The level system has been **{status_text}**.",
+                color=0x1e90ff
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        else:
+            # No enabled parameter, but config exists -> error
+            await interaction.response.send_message(
+                "❌ Your Level System is already set on this Server!\n"
+                "Use `/level_up_system` with `enabled: On/Off` to toggle the system.",
+                ephemeral=True
+            )
+            return
+
+    # No config, perform initial setup
+    # Save channel
+    level_roles = {"_channel": select_channel.id}
+    # enabled default to On
+    enabled_status = True if enabled is None or enabled.value == "On" else False
+    set_level_config(interaction.guild.id, select_channel.id, level_roles, enabled_status)
 
     view = LevelConfigView(interaction.guild, level, select_channel.id)
 
@@ -285,6 +322,12 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
+    # Check if level system is enabled
+    config = get_level_config(message.guild.id)
+    if not config or not config.get("enabled", True):
+        await bot.process_commands(message)
+        return
+
     guild = message.guild
     user = message.author
 
@@ -300,57 +343,55 @@ async def on_message(message):
         current_xp = 0
         set_user_xp(guild.id, user.id, current_xp, new_level)
 
-        config = get_level_config(guild.id)
-        if config:
-            level_roles = config.get("level_roles", {})
-            # Remove roles from previous levels (1 to new_level-1)
-            roles_to_remove = []
-            for lv in range(1, new_level):
-                role_ids = level_roles.get(str(lv), [])
-                for rid in role_ids:
-                    role = guild.get_role(rid)
-                    if role and role in user.roles:
-                        roles_to_remove.append(role)
-            if roles_to_remove:
-                try:
-                    await user.remove_roles(*roles_to_remove, reason=f"Leveled up to Level {new_level}")
-                except discord.Forbidden:
-                    pass
-
-            # Add roles for new level
-            role_ids = level_roles.get(str(new_level), [])
-            roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
-            if roles_to_add:
-                try:
-                    await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
-                except discord.Forbidden:
-                    pass
-            else:
-                roles_to_add = []
-
-            # Announce in configured channel
-            channel_id = config.get("channel_id")
-            if channel_id:
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
-                    await channel.send(content=user.mention, embed=embed)
-
-            # DM user
+        level_roles = config.get("level_roles", {})
+        # Remove roles from previous levels (1 to new_level-1)
+        roles_to_remove = []
+        for lv in range(1, new_level):
+            role_ids = level_roles.get(str(lv), [])
+            for rid in role_ids:
+                role = guild.get_role(rid)
+                if role and role in user.roles:
+                    roles_to_remove.append(role)
+        if roles_to_remove:
             try:
-                dm_embed = discord.Embed(
-                    title=f"🌟 Level Up in {guild.name}!",
-                    description=f"You've reached **Level {new_level}**!",
-                    color=0x1e90ff
-                )
-                dm_embed.set_thumbnail(url=user.display_avatar.url)
-                if roles_to_add:
-                    role_mentions = " ".join([r.mention for r in roles_to_add])
-                    dm_embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
-                dm_embed.set_footer(text="Keep chatting to level up further!")
-                await user.send(embed=dm_embed)
-            except:
+                await user.remove_roles(*roles_to_remove, reason=f"Leveled up to Level {new_level}")
+            except discord.Forbidden:
                 pass
+
+        # Add roles for new level
+        role_ids = level_roles.get(str(new_level), [])
+        roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
+        if roles_to_add:
+            try:
+                await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
+            except discord.Forbidden:
+                pass
+        else:
+            roles_to_add = []
+
+        # Announce in configured channel
+        channel_id = config.get("channel_id")
+        if channel_id:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
+                await channel.send(content=user.mention, embed=embed)
+
+        # DM user
+        try:
+            dm_embed = discord.Embed(
+                title=f"🌟 Level Up in {guild.name}!",
+                description=f"You've reached **Level {new_level}**!",
+                color=0x1e90ff
+            )
+            dm_embed.set_thumbnail(url=user.display_avatar.url)
+            if roles_to_add:
+                role_mentions = " ".join([r.mention for r in roles_to_add])
+                dm_embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
+            dm_embed.set_footer(text="Keep chatting to level up further!")
+            await user.send(embed=dm_embed)
+        except:
+            pass
 
     else:
         set_user_xp(guild.id, user.id, current_xp, current_level)
@@ -360,6 +401,19 @@ async def on_message(message):
 @bot.command(name="level")
 async def level_command(ctx):
     """Check your current level and XP."""
+    config = get_level_config(ctx.guild.id)
+    if not config or not config.get("enabled", True):
+        embed = discord.Embed(
+            title="❌ Level System Not Active",
+            description=(
+                "The Level System is not set up or is currently disabled on this Server.\n"
+                "An administrator should use `/level_up_system` to configure it."
+            ),
+            color=0xe74c3c
+        )
+        await ctx.reply(embed=embed, mention_author=False)
+        return
+
     data = get_user_xp(ctx.guild.id, ctx.author.id)
     level = data["level"]
     xp = data["xp"]
@@ -981,7 +1035,7 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level-up-system | .level"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | .level"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -1655,7 +1709,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level-up-system` - Configure level-up roles (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)",
         inline=False
     )
     emb.add_field(
