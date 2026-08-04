@@ -48,6 +48,7 @@ ticket_panels_col = None
 verification_config_col = None
 level_config_col = None
 user_xp_col = None
+active_checker_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -60,6 +61,7 @@ try:
     verification_config_col = db["verification_config"]
     level_config_col = db["level_config"]
     user_xp_col = db["user_xp"]
+    active_checker_col = db["active_checker_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -117,6 +119,19 @@ def set_user_xp(guild_id, user_id, xp, level):
         {"$set": {"xp": xp, "level": level}},
         upsert=True
     )
+
+def get_max_level(guild_id):
+    config = get_level_config(guild_id)
+    if not config:
+        return 0
+    level_roles = config.get("level_roles", {})
+    max_lv = 0
+    for key in level_roles.keys():
+        if key.isdigit():
+            lv = int(key)
+            if lv > max_lv:
+                max_lv = lv
+    return max_lv
 
 def get_level_up_embed(user, level, guild, roles_added=None):
     if level == 1:
@@ -232,7 +247,6 @@ class LevelConfigView(discord.ui.View):
         else:
             level_roles = config.get("level_roles", {})
         level_roles[str(self.level)] = selected_role_ids
-        # Keep enabled status if exists
         enabled = config.get("enabled", True) if config else True
         set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
 
@@ -272,7 +286,6 @@ async def level_up_system(
 
     config = get_level_config(interaction.guild.id)
     if config:
-        # If enabled parameter is provided, just update enabled status
         if enabled is not None:
             new_status = True if enabled.value == "On" else False
             update_level_enabled(interaction.guild.id, new_status)
@@ -285,7 +298,6 @@ async def level_up_system(
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         else:
-            # No enabled parameter, but config exists -> error
             await interaction.response.send_message(
                 "❌ Your Level System is already set on this Server!\n"
                 "Use `/level_up_system` with `enabled: On/Off` to toggle the system.",
@@ -293,10 +305,7 @@ async def level_up_system(
             )
             return
 
-    # No config, perform initial setup
-    # Save channel
     level_roles = {"_channel": select_channel.id}
-    # enabled default to On
     enabled_status = True if enabled is None or enabled.value == "On" else False
     set_level_config(interaction.guild.id, select_channel.id, level_roles, enabled_status)
 
@@ -322,7 +331,6 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # Check if level system is enabled
     config = get_level_config(message.guild.id)
     if not config or not config.get("enabled", True):
         await bot.process_commands(message)
@@ -332,19 +340,23 @@ async def on_message(message):
     user = message.author
 
     data = get_user_xp(guild.id, user.id)
-    current_xp = data["xp"]
     current_level = data["level"]
+    max_lv = get_max_level(guild.id)
 
+    if current_level >= max_lv and max_lv > 0:
+        await bot.process_commands(message)
+        return
+
+    current_xp = data["xp"]
     current_xp += 1
     next_level = current_level + 1
 
-    if next_level <= 10 and current_xp >= get_required_xp(next_level):
+    if next_level <= max_lv and current_xp >= get_required_xp(next_level):
         new_level = next_level
         current_xp = 0
         set_user_xp(guild.id, user.id, current_xp, new_level)
 
         level_roles = config.get("level_roles", {})
-        # Remove roles from previous levels (1 to new_level-1)
         roles_to_remove = []
         for lv in range(1, new_level):
             role_ids = level_roles.get(str(lv), [])
@@ -358,7 +370,6 @@ async def on_message(message):
             except discord.Forbidden:
                 pass
 
-        # Add roles for new level
         role_ids = level_roles.get(str(new_level), [])
         roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
         if roles_to_add:
@@ -369,7 +380,6 @@ async def on_message(message):
         else:
             roles_to_add = []
 
-        # Announce in configured channel
         channel_id = config.get("channel_id")
         if channel_id:
             channel = guild.get_channel(channel_id)
@@ -377,7 +387,6 @@ async def on_message(message):
                 embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
                 await channel.send(content=user.mention, embed=embed)
 
-        # DM user
         try:
             dm_embed = discord.Embed(
                 title=f"🌟 Level Up in {guild.name}!",
@@ -400,7 +409,6 @@ async def on_message(message):
 
 @bot.command(name="level")
 async def level_command(ctx):
-    """Check your current level and XP."""
     config = get_level_config(ctx.guild.id)
     if not config or not config.get("enabled", True):
         embed = discord.Embed(
@@ -417,8 +425,13 @@ async def level_command(ctx):
     data = get_user_xp(ctx.guild.id, ctx.author.id)
     level = data["level"]
     xp = data["xp"]
-    next_level = level + 1
-    if level >= 10:
+    max_lv = get_max_level(ctx.guild.id)
+
+    if max_lv == 0:
+        await ctx.reply("No levels configured yet.", mention_author=False)
+        return
+
+    if level >= max_lv:
         embed = discord.Embed(
             title="📊 Your Level Stats",
             description=f"{ctx.author.mention}",
@@ -431,6 +444,7 @@ async def level_command(ctx):
         embed.set_footer(text="You've reached the maximum level!")
         await ctx.reply(embed=embed, mention_author=False)
     else:
+        next_level = level + 1
         required = get_required_xp(next_level)
         progress = xp / required
         bar_length = 10
@@ -447,6 +461,89 @@ async def level_command(ctx):
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
         embed.set_footer(text=f"{xp} XP until Level {next_level}")
         await ctx.reply(embed=embed, mention_author=False)
+
+# ========== ACTIVE CHECKER SYSTEM ==========
+
+active_checker_tasks = {}
+
+def parse_time_interval(time_str: str) -> int:
+    time_str = time_str.lower().strip()
+    if time_str.endswith("d"):
+        return int(time_str[:-1]) * 86400
+    elif time_str.endswith("week"):
+        return int(time_str[:-4]) * 604800
+    elif time_str.endswith("month"):
+        return int(time_str[:-5]) * 2592000
+    elif time_str.endswith("year"):
+        return int(time_str[:-4]) * 31536000
+    else:
+        raise ValueError("Invalid time format. Use e.g., 1d, 1week, 1month, 1year")
+
+async def active_checker_loop(guild_id, channel_id, interval_seconds):
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                break
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                break
+
+            embed = discord.Embed(
+                title="🟢 Active Check",
+                description="🟢 Active Check. I just want to check y'all if you are Active. Please react so we know if you are Active.",
+                color=0x1e90ff
+            )
+            embed.set_footer(text="Active Checker")
+            msg = await channel.send(content="@everyone", embed=embed)
+            await msg.add_reaction("✅")
+
+            await asyncio.sleep(interval_seconds)
+        except Exception as e:
+            print(f"Active checker error: {e}")
+            await asyncio.sleep(60)
+
+@bot.tree.command(name="active_checker", description="Set up an active checker that pings @everyone periodically")
+@app_commands.describe(
+    time="Interval (e.g., 1d, 1week, 1month, 1year)",
+    channel="The channel where the active check message will be sent"
+)
+@app_commands.default_permissions(administrator=True)
+async def active_checker(
+    interaction: discord.Interaction,
+    time: str,
+    channel: discord.TextChannel
+):
+    try:
+        interval = parse_time_interval(time)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    # Save config
+    active_checker_col.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"channel_id": channel.id, "interval": interval}},
+        upsert=True
+    )
+
+    # Cancel existing task if any
+    if guild_id in active_checker_tasks:
+        active_checker_tasks[guild_id].cancel()
+        del active_checker_tasks[guild_id]
+
+    # Start new task
+    task = asyncio.create_task(active_checker_loop(guild_id, channel.id, interval))
+    active_checker_tasks[guild_id] = task
+
+    embed = discord.Embed(
+        title="✅ Active Checker Set Up",
+        description=f"Will ping @everyone in {channel.mention} every **{time}** with an active check message.",
+        color=0x1e90ff
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ========== TICKET SYSTEM ==========
 
@@ -1035,7 +1132,15 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | .level"))
+    active_configs = active_checker_col.find()
+    for cfg in active_configs:
+        guild_id = cfg["guild_id"]
+        channel_id = cfg["channel_id"]
+        interval = cfg["interval"]
+        task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
+        active_checker_tasks[guild_id] = task
+
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -1709,7 +1814,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)",
         inline=False
     )
     emb.add_field(
