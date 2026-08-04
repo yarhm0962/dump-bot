@@ -1093,6 +1093,24 @@ async def verify_system(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
+    # Check bot permissions
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.followup.send("❌ I need the 'Manage Roles' permission to set up verification.", ephemeral=True)
+        return
+    if not interaction.guild.me.guild_permissions.manage_channels:
+        await interaction.followup.send("❌ I need the 'Manage Channels' permission to set up verification.", ephemeral=True)
+        return
+
+    # Check if the bot's highest role is above the selected role (to manage it)
+    bot_top_role = interaction.guild.me.top_role
+    if bot_top_role <= select_role:
+        await interaction.followup.send(
+            "❌ My highest role is not above the selected verification role. "
+            "Please move my role higher in the role hierarchy, or choose a lower role.",
+            ephemeral=True
+        )
+        return
+
     # 1. Create or get "Not Verified" role
     not_verified_role = discord.utils.get(guild.roles, name="Not Verified")
     if not not_verified_role:
@@ -1108,12 +1126,6 @@ async def verify_system(
             return
 
     # 2. Set up channel permissions for all channels
-    # We need to deny view_channel for Not Verified role on all channels except the verification channel.
-    # Allow view_channel for select_role on all channels except verification channel.
-    # For verification channel: allow view_channel for Not Verified, deny send_messages, deny create threads.
-    # Also deny view_channel for select_role on verification channel.
-
-    # We'll do this in batches to avoid rate limits.
     async def update_channel_perms(channel_obj):
         if channel_obj == channel:
             # Verification channel permissions
@@ -1136,22 +1148,24 @@ async def verify_system(
         try:
             await channel_obj.edit(overwrites=overwrites)
         except discord.Forbidden:
-            pass  # Skip if we can't edit
+            # Skip if we lack permissions
+            pass
+        except discord.HTTPException as e:
+            # Log but continue
+            print(f"Failed to update permissions for {channel_obj.name}: {e}")
 
-    # Apply to all text channels and categories? We'll apply to all channel types.
-    sem = asyncio.Semaphore(10)  # Limit concurrent edits
+    # Apply to all text channels and categories (skip voice/stage to avoid permission issues)
+    channels_to_update = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.CategoryChannel))]
+    sem = asyncio.Semaphore(10)
 
     async def apply_permissions(ch):
         async with sem:
-            try:
-                await update_channel_perms(ch)
-            except Exception as e:
-                print(f"Failed to update permissions for {ch.name}: {e}")
+            await update_channel_perms(ch)
 
-    tasks = [apply_permissions(ch) for ch in guild.channels]
+    tasks = [apply_permissions(ch) for ch in channels_to_update]
     await asyncio.gather(*tasks)
 
-    # 3. Assign Not Verified role to all members (except bots)
+    # 3. Assign Not Verified role to all members (except bots and admins? we will assign to all non-bots)
     members_assigned = 0
     async for member in guild.fetch_members(limit=None):
         if member.bot:
@@ -1161,7 +1175,7 @@ async def verify_system(
                 await member.add_roles(not_verified_role, reason="Verification system initialization")
                 members_assigned += 1
                 if members_assigned % 10 == 0:
-                    await asyncio.sleep(0.5)  # Avoid rate limits
+                    await asyncio.sleep(0.5)
             except discord.Forbidden:
                 continue
             except Exception as e:
