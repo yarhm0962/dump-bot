@@ -46,9 +46,6 @@ logs_col = None
 tickets_col = None
 ticket_panels_col = None
 verification_config_col = None
-level_config_col = None
-user_xp_col = None
-active_checker_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -59,9 +56,6 @@ try:
     tickets_col = db["tickets"]
     ticket_panels_col = db["ticket_panels"]
     verification_config_col = db["verification_config"]
-    level_config_col = db["level_config"]
-    user_xp_col = db["user_xp"]
-    active_checker_col = db["active_checker_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -71,518 +65,94 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-async def get_allowed_channel():
+def get_allowed_channel():
     if settings_col is None:
         return None
-    doc = await asyncio.to_thread(settings_col.find_one, {"key": "command_channel"})
+    doc = settings_col.find_one({"key": "command_channel"})
     if doc:
         return doc.get("value")
     return None
 
-async def set_allowed_channel(channel_id):
+def set_allowed_channel(channel_id):
     if settings_col is not None:
-        await asyncio.to_thread(settings_col.update_one, {"key": "command_channel"}, {"$set": {"value": channel_id}}, upsert=True)
+        settings_col.update_one(
+            {"key": "command_channel"},
+            {"$set": {"value": channel_id}},
+            upsert=True
+        )
 
-async def clear_allowed_channel():
+def clear_allowed_channel():
     if settings_col is not None:
-        await asyncio.to_thread(settings_col.delete_one, {"key": "command_channel"})
+        settings_col.delete_one({"key": "command_channel"})
 
-async def get_level_config(guild_id):
-    if level_config_col is None:
-        return None
-    return await asyncio.to_thread(level_config_col.find_one, {"guild_id": guild_id})
+@bot.check
+async def global_channel_check(ctx):
+    if ctx.author.id == OWNER_ID:
+        return True
+    if ctx.guild is None:
+        await ctx.send("⚠️ You are not allowed to use commands in DMs.")
+        return False
+    allowed = get_allowed_channel()
+    if allowed is None:
+        return True
+    if ctx.channel.id == allowed:
+        return True
+    await ctx.send(f"⚠️ Commands are restricted to <#{allowed}>. Please use them there.")
+    return False
 
-async def set_level_config(guild_id, channel_id, level_roles, enabled=True):
-    if level_config_col is not None:
-        await asyncio.to_thread(level_config_col.update_one,
-            {"guild_id": guild_id},
-            {"$set": {"channel_id": channel_id, "level_roles": level_roles, "enabled": enabled}},
-            upsert=True
-        )
-
-async def update_level_enabled(guild_id, enabled):
-    if level_config_col is not None:
-        await asyncio.to_thread(level_config_col.update_one,
-            {"guild_id": guild_id},
-            {"$set": {"enabled": enabled}},
-            upsert=True
-        )
-
-async def get_user_xp(guild_id, user_id):
-    if user_xp_col is None:
-        return {"xp": 0, "level": 0}
-    doc = await asyncio.to_thread(user_xp_col.find_one, {"guild_id": guild_id, "user_id": user_id})
-    if not doc:
-        return {"xp": 0, "level": 0}
-    return {"xp": doc.get("xp", 0), "level": doc.get("level", 0)}
-
-async def set_user_xp(guild_id, user_id, xp, level):
-    if user_xp_col is not None:
-        await asyncio.to_thread(user_xp_col.update_one,
-            {"guild_id": guild_id, "user_id": user_id},
-            {"$set": {"xp": xp, "level": level}},
-            upsert=True
-        )
-
-async def get_max_level(guild_id):
-    config = await get_level_config(guild_id)
-    if not config:
-        return 0
-    level_roles = config.get("level_roles", {})
-    max_lv = 0
-    for key in level_roles.keys():
-        if key.isdigit():
-            lv = int(key)
-            if lv > max_lv:
-                max_lv = lv
-    return max_lv
-
-def get_required_xp(level):
-    XP_PER_LEVEL = {
-        1: 20, 2: 50, 3: 100, 4: 150, 5: 200,
-        6: 250, 7: 300, 8: 350, 9: 400, 10: 500
-    }
-    return XP_PER_LEVEL.get(level, 500)
-
-def get_level_up_embed(user, level, guild, roles_added=None):
-    if level == 1:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 1**!"
-        footer = "Keep chatting to level up further!"
-    elif level == 2:
-        color = 0x00bfff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 2**!\nYou're getting the hang of it!"
-        footer = "Next level requires 50 XP"
-    elif level == 3:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 3**!\nYou're on fire!"
-        footer = "Next level requires 100 XP"
-    elif level == 4:
-        color = 0x4169e1
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 4**!\nAmazing progress!"
-        footer = "Next level requires 150 XP"
-    elif level == 5:
-        color = 0x6a5acd
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 5**!\nYou're a legend!"
-        footer = "Next level requires 200 XP"
-    elif level == 6:
-        color = 0x8a2be2
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 6**!\nIncredible!"
-        footer = "Next level requires 250 XP"
-    elif level == 7:
-        color = 0x9400d3
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 7**!\nYou're unstoppable!"
-        footer = "Next level requires 300 XP"
-    elif level == 8:
-        color = 0x9932cc
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 8**!\nPhenomenal!"
-        footer = "Next level requires 350 XP"
-    elif level == 9:
-        color = 0xba55d3
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 9**!\nAlmost at the top!"
-        footer = "Next level requires 400 XP"
-    elif level == 10:
-        color = 0xff69b4
-        title = "🌟 LEVEL MAX! 🌟"
-        desc = f"{user.mention} has reached the **MAX LEVEL 10**!\nYou are the ultimate champion!"
-        footer = "You've mastered the level system!"
-    else:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level {level}**!"
-        footer = "Keep going!"
-
-    embed = discord.Embed(title=title, description=desc, color=color)
-    embed.set_thumbnail(url=user.display_avatar.url)
-    if roles_added:
-        role_mentions = " ".join([f"<@&{rid}>" for rid in roles_added])
-        embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
-    embed.set_footer(text=footer)
-    return embed
-
-class LevelConfigView(discord.ui.View):
-    def __init__(self, guild, level, channel_id, is_update=False, enabled=True):
-        super().__init__(timeout=120)
-        self.guild = guild
-        self.level = level
-        self.channel_id = channel_id
-        self.is_update = is_update
-        self.enabled = enabled
-
-        roles = [r for r in guild.roles if r.name != "@everyone"]
-        roles.sort(key=lambda r: r.position, reverse=True)
-
-        if len(roles) > 25:
-            roles = roles[:25]
-            self.add_item(discord.ui.Button(label="Too many roles, only first 25 shown", disabled=True))
-
-        options = []
-        for r in roles:
-            options.append(discord.SelectOption(
-                label=r.name,
-                value=str(r.id),
-                description=f"ID: {r.id}",
-                emoji=None
-            ))
-
-        select = discord.ui.Select(
-            placeholder=f"Select exactly {level} role(s) for Level {level}. Previous level roles will be removed on level up.",
-            min_values=level,
-            max_values=level,
-            options=options,
-            custom_id="level_role_select"
-        )
-        select.callback = self.select_callback
-        self.add_item(select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        if interaction.user != interaction.message.interaction.user:
-            await interaction.response.send_message("You are not the one who ran the command.", ephemeral=True)
-            return
-
-        selected_role_ids = [int(value) for value in interaction.data["values"]]
-        config = await get_level_config(self.guild.id)
-        if config:
-            level_roles = config.get("level_roles", {})
-            enabled = config.get("enabled", True)
-        else:
-            level_roles = {}
-            enabled = self.enabled
-        level_roles[str(self.level)] = selected_role_ids
-        await set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
-
-        action = "updated" if self.is_update else "saved"
-        embed = discord.Embed(
-            title=f"✅ Level Configuration {action.capitalize()}",
-            description=f"Level **{self.level}** will now assign the following roles:\n" +
-                        "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
-            color=0x1e90ff
-        )
-        embed.set_footer(text="You can re-run the command to change roles or toggle the system.")
-        await interaction.response.edit_message(embed=embed, view=None)
-
-@bot.tree.command(name="level_up_system", description="Configure the level-up system")
-@app_commands.describe(
-    level="The level number (1-10) to configure",
-    select_channel="The channel where level-up announcements will be sent",
-    enabled="Enable or disable the level system (optional, True/False)",
-    update="Update an existing configuration (optional, True/False)"
-)
-@app_commands.choices(enabled=[
-    app_commands.Choice(name="True", value="True"),
-    app_commands.Choice(name="False", value="False")
-])
-@app_commands.choices(update=[
-    app_commands.Choice(name="True", value="True"),
-    app_commands.Choice(name="False", value="False")
-])
-@app_commands.default_permissions(administrator=True)
-async def level_up_system(
-    interaction: discord.Interaction,
-    level: int,
-    select_channel: discord.TextChannel,
-    enabled: app_commands.Choice[str] = None,
-    update: app_commands.Choice[str] = None
-):
-    if level < 1 or level > 10:
-        await interaction.response.send_message("Level must be between 1 and 10.", ephemeral=True)
-        return
-
-    if not interaction.guild.me.guild_permissions.manage_roles:
-        await interaction.response.send_message("I need the 'Manage Roles' permission to assign roles.", ephemeral=True)
-        return
-
-    config = await get_level_config(interaction.guild.id)
-
-    if enabled is not None:
-        new_status = True if enabled.value == "True" else False
-        await update_level_enabled(interaction.guild.id, new_status)
-        status_text = "enabled" if new_status else "disabled"
-        embed = discord.Embed(
-            title="✅ Level System Updated",
-            description=f"The level system has been **{status_text}**.",
-            color=0x1e90ff
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-
-    has_roles = False
-    if config:
-        level_roles = config.get("level_roles", {})
-        for key in level_roles:
-            if key != "_channel":
-                has_roles = True
-                break
-
-    if config and has_roles:
-        if update is not None and update.value == "True":
-            view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True, enabled=config.get("enabled", True))
-            embed = discord.Embed(
-                title="🎛️ Level Role Update",
-                description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
-                color=0x1e90ff
-            )
-            embed.set_footer(text="You have 2 minutes to choose.")
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            return
-        else:
-            await interaction.response.send_message(
-                "❌ Your Level System is already set on this Server!\n"
-                "Use `/level_up_system` with `update: True` to modify existing configuration, or `enabled: True/False` to toggle the system.",
-                ephemeral=True
-            )
-            return
-
-    view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False, enabled=True)
+@bot.tree.command(name="ping", description="Check bot latency")
+async def slash_ping(interaction: discord.Interaction):
+    start = time.perf_counter()
+    api_latency = round(bot.latency * 1000)
     embed = discord.Embed(
-        title="🎛️ Level Role Configuration",
-        description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
-        color=0x1e90ff
+        title="🏓 Pong!",
+        color=0x2c3e99,
+        description=f"**API Latency:** `{api_latency} ms`"
     )
-    embed.set_footer(text="You have 2 minutes to choose.")
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if not message.guild:
-        return
-
-    if message.content.startswith("."):
-        await bot.process_commands(message)
-        return
-
-    config = await get_level_config(message.guild.id)
-    if not config or not config.get("enabled", True):
-        await bot.process_commands(message)
-        return
-
-    guild = message.guild
-    user = message.author
-
-    data = await get_user_xp(guild.id, user.id)
-    current_level = data["level"]
-    max_lv = await get_max_level(guild.id)
-
-    if current_level >= max_lv and max_lv > 0:
-        await bot.process_commands(message)
-        return
-
-    current_xp = data["xp"]
-    current_xp += 1
-    next_level = current_level + 1
-
-    if next_level <= max_lv and current_xp >= get_required_xp(next_level):
-        new_level = next_level
-        current_xp = 0
-        await set_user_xp(guild.id, user.id, current_xp, new_level)
-
-        level_roles = config.get("level_roles", {})
-        roles_to_remove = []
-        for lv in range(1, new_level):
-            role_ids = level_roles.get(str(lv), [])
-            for rid in role_ids:
-                role = guild.get_role(rid)
-                if role and role in user.roles:
-                    roles_to_remove.append(role)
-        if roles_to_remove:
-            try:
-                await user.remove_roles(*roles_to_remove, reason=f"Leveled up to Level {new_level}")
-            except discord.Forbidden:
-                pass
-
-        role_ids = level_roles.get(str(new_level), [])
-        roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
-        if roles_to_add:
-            try:
-                await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
-            except discord.Forbidden:
-                pass
-        else:
-            roles_to_add = []
-
-        channel_id = config.get("channel_id")
-        if channel_id:
-            channel = guild.get_channel(channel_id)
-            if channel:
-                embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
-                await channel.send(content=user.mention, embed=embed)
-
-        try:
-            dm_embed = discord.Embed(
-                title=f"🌟 Level Up in {guild.name}!",
-                description=f"You've reached **Level {new_level}**!",
-                color=0x1e90ff
-            )
-            dm_embed.set_thumbnail(url=user.display_avatar.url)
-            if roles_to_add:
-                role_mentions = " ".join([r.mention for r in roles_to_add])
-                dm_embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
-            dm_embed.set_footer(text="Keep chatting to level up further!")
-            await user.send(embed=dm_embed)
-        except:
-            pass
-
-    else:
-        await set_user_xp(guild.id, user.id, current_xp, current_level)
-
-    await bot.process_commands(message)
-
-@bot.command(name="level")
-async def level_command(ctx):
-    config = await get_level_config(ctx.guild.id)
-    if not config or not config.get("enabled", True):
-        embed = discord.Embed(
-            title="❌ Level System Not Active",
-            description=(
-                "The Level System is not set up or is currently disabled on this Server.\n"
-                "An administrator should use `/level_up_system` to configure it."
-            ),
-            color=0xe74c3c
-        )
-        await ctx.reply(embed=embed, mention_author=False)
-        return
-
-    data = await get_user_xp(ctx.guild.id, ctx.author.id)
-    level = data["level"]
-    xp = data["xp"]
-    max_lv = await get_max_level(ctx.guild.id)
-
-    if max_lv == 0:
-        await ctx.reply("No levels configured yet.", mention_author=False)
-        return
-
-    if level >= max_lv:
-        embed = discord.Embed(
-            title="📊 Your Level Stats",
-            description=f"{ctx.author.mention}",
-            color=0x1e90ff
-        )
-        embed.add_field(name="Level", value=f"**{level}** (MAX)", inline=True)
-        embed.add_field(name="Total XP", value=f"**{xp}**", inline=True)
-        embed.add_field(name="Required XP", value="**MAX**", inline=True)
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text="You've reached the maximum level!")
-        await ctx.reply(embed=embed, mention_author=False)
-    else:
-        next_level = level + 1
-        required = get_required_xp(next_level)
-        progress = xp / required
-        bar_length = 10
-        filled = int(progress * bar_length)
-        bar = "█" * filled + "░" * (bar_length - filled)
-        embed = discord.Embed(
-            title="📊 Your Level Stats",
-            description=f"{ctx.author.mention}",
-            color=0x1e90ff
-        )
-        embed.add_field(name="Level", value=f"**{level}**", inline=True)
-        embed.add_field(name="XP", value=f"**{xp}** / {required}", inline=True)
-        embed.add_field(name="Progress", value=f"`{bar}` {int(progress*100)}%", inline=False)
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text=f"{xp} XP until Level {next_level}")
-        await ctx.reply(embed=embed, mention_author=False)
-
-active_checker_tasks = {}
-
-def parse_time_interval(time_str: str) -> int:
-    time_str = time_str.lower().strip()
-    if time_str.endswith("d"):
-        return int(time_str[:-1]) * 86400
-    elif time_str.endswith("week"):
-        return int(time_str[:-4]) * 604800
-    elif time_str.endswith("month"):
-        return int(time_str[:-5]) * 2592000
-    elif time_str.endswith("year"):
-        return int(time_str[:-4]) * 31536000
-    else:
-        raise ValueError("Invalid time format. Use e.g., 1d, 1week, 1month, 1year")
-
-async def active_checker_loop(guild_id, channel_id, interval_seconds):
-    await bot.wait_until_ready()
-    await asyncio.sleep(interval_seconds)
-    while not bot.is_closed():
-        try:
-            guild = bot.get_guild(guild_id)
-            if not guild:
-                break
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                break
-
-            embed = discord.Embed(
-                title="🟢 Active Check",
-                description="Active check. I just want y'all to check if you are Active. React so we know if y'all is Active.",
-                color=0x1e90ff
-            )
-            embed.set_footer(text="Powered by MonLua Bot")
-            msg = await channel.send(content="@everyone", embed=embed)
-            await msg.add_reaction("✅")
-            await asyncio.sleep(interval_seconds)
-        except Exception as e:
-            print(f"Active checker error: {e}")
-            await asyncio.sleep(60)
-
-@bot.tree.command(name="active_checker", description="Set up an active checker that pings @everyone periodically")
-@app_commands.describe(
-    time="Interval (e.g., 1d, 1week, 1month, 1year)",
-    channel="The channel where the active check message will be sent"
-)
-@app_commands.default_permissions(administrator=True)
-async def active_checker(
-    interaction: discord.Interaction,
-    time: str,
-    channel: discord.TextChannel
-):
-    try:
-        interval = parse_time_interval(time)
-    except ValueError as e:
-        await interaction.response.send_message(str(e), ephemeral=True)
-        return
-
-    guild_id = interaction.guild.id
-    existing = await asyncio.to_thread(active_checker_col.find_one, {"guild_id": guild_id})
-
-    if existing:
-        existing_channel_id = existing.get("channel_id")
-        existing_interval = existing.get("interval")
-        if existing_channel_id == channel.id and existing_interval == interval:
-            await interaction.response.send_message(
-                "❌ You already have an Active Checker set up with the same time and channel. "
-                "To change it, use a different time or channel.",
-                ephemeral=True
-            )
-            return
-        else:
-            if guild_id in active_checker_tasks:
-                active_checker_tasks[guild_id].cancel()
-                del active_checker_tasks[guild_id]
-
-    await asyncio.to_thread(active_checker_col.update_one,
-        {"guild_id": guild_id},
-        {"$set": {"channel_id": channel.id, "interval": interval}},
-        upsert=True
-    )
-
-    task = asyncio.create_task(active_checker_loop(guild_id, channel.id, interval))
-    active_checker_tasks[guild_id] = task
-
-    embed = discord.Embed(
-        title="✅ Active Checker Set Up",
-        description=f"Will ping @everyone in {channel.mention} every **{time}** with an active check message.",
-        color=0x1e90ff
-    )
+    end = time.perf_counter()
+    response_time = round((end - start) * 1000)
+    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
+    embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="channel_set", description="Set the channel where commands are allowed")
+@app_commands.describe(channel="The channel to allow commands in")
+@app_commands.default_permissions(administrator=True)
+async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
+    set_allowed_channel(channel.id)
+    await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
+
+@bot.tree.command(name="channel_view", description="View the currently allowed channel")
+async def channel_view(interaction: discord.Interaction):
+    allowed = get_allowed_channel()
+    if allowed is None:
+        await interaction.response.send_message("ℹ️ No channel restriction is set. Commands are allowed everywhere.", ephemeral=True)
+    else:
+        channel = bot.get_channel(allowed)
+        if channel:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to {channel.mention}.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
+
+@bot.tree.command(name="channel_clear", description="Remove the channel restriction")
+@app_commands.default_permissions(administrator=True)
+async def channel_clear(interaction: discord.Interaction):
+    clear_allowed_channel()
+    await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
+
+@bot.command(name="ping")
+async def prefix_ping(ctx):
+    start = time.perf_counter()
+    api_latency = round(bot.latency * 1000)
+    embed = discord.Embed(
+        title="🏓 Pong!",
+        color=0x2c3e99,
+        description=f"**API Latency:** `{api_latency} ms`"
+    )
+    end = time.perf_counter()
+    response_time = round((end - start) * 1000)
+    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
+    await ctx.reply(embed=embed, mention_author=True)
 
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
@@ -598,12 +168,12 @@ class PersistentTicketPanel(discord.ui.View):
         self.add_item(button)
 
     async def open_ticket_callback(self, interaction: discord.Interaction):
-        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(self.panel_id)})
+        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
         if not panel:
             await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
             return
 
-        existing = await asyncio.to_thread(tickets_col.find_one, {
+        existing = tickets_col.find_one({
             "guild_id": interaction.guild.id,
             "user_id": interaction.user.id,
             "closed": False
@@ -611,10 +181,7 @@ class PersistentTicketPanel(discord.ui.View):
         if existing:
             channel = interaction.guild.get_channel(existing["channel_id"])
             if channel is None:
-                await asyncio.to_thread(tickets_col.update_one,
-                    {"_id": existing["_id"]},
-                    {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}}
-                )
+                tickets_col.update_one({"_id": existing["_id"]}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}})
                 existing = None
             else:
                 await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
@@ -668,12 +235,9 @@ class PersistentTicketPanel(discord.ui.View):
             "created_at": datetime.utcnow(),
             "panel_id": self.panel_id
         }
-        result = await asyncio.to_thread(tickets_col.insert_one, ticket_doc)
-        ticket_id = str(result.inserted_id)
-        await asyncio.to_thread(tickets_col.update_one,
-            {"_id": result.inserted_id},
-            {"$set": {"ticket_id": ticket_id}}
-        )
+        result_ticket = tickets_col.insert_one(ticket_doc)
+        ticket_id = str(result_ticket.inserted_id)
+        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
 
         ticket_view = TicketView(ticket_id, panel)
         await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
@@ -719,12 +283,12 @@ class TicketView(discord.ui.View):
 
     async def claim_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = await asyncio.to_thread(tickets_col.find_one, {"_id": ObjectId(ticket_id)})
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
             return
 
-        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(ticket["panel_id"])})
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
         if not panel:
             await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
             return
@@ -750,14 +314,12 @@ class TicketView(discord.ui.View):
             await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
             return
 
-        await asyncio.to_thread(tickets_col.update_one,
-            {"_id": ObjectId(ticket_id)},
-            {"$set": {"claimed_by": interaction.user.id}}
-        )
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
 
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
             creator_mention = f"<@{ticket['user_id']}>"
+            
             embed_claim = discord.Embed(
                 title="🖐️ Ticket Claimed",
                 description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
@@ -808,12 +370,12 @@ class TicketView(discord.ui.View):
 
     async def close_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = await asyncio.to_thread(tickets_col.find_one, {"_id": ObjectId(ticket_id)})
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
             return
 
-        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(ticket["panel_id"])})
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
         if not panel:
             await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
             return
@@ -839,10 +401,7 @@ class TicketView(discord.ui.View):
         if channel:
             await channel.delete(reason=f"Ticket closed by {interaction.user}")
 
-        await asyncio.to_thread(tickets_col.update_one,
-            {"_id": ObjectId(ticket_id)},
-            {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}}
-        )
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
 
         try:
             creator = await bot.fetch_user(ticket["user_id"])
@@ -945,7 +504,7 @@ async def ticket_command(
         "label_color": label_color,
         "created_at": datetime.utcnow()
     }
-    result = await asyncio.to_thread(ticket_panels_col.insert_one, panel_data)
+    result = ticket_panels_col.insert_one(panel_data)
     panel_id = str(result.inserted_id)
 
     embed = discord.Embed(
@@ -974,7 +533,7 @@ class VerifyView(discord.ui.View):
         self.add_item(button)
 
     async def verify_callback(self, interaction: discord.Interaction):
-        config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": interaction.guild.id})
+        config = verification_config_col.find_one({"guild_id": interaction.guild.id})
         if not config:
             await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
             return
@@ -1112,7 +671,7 @@ async def verify_system(
         "channel_id": channel.id,
         "message_id": msg.id
     }
-    await asyncio.to_thread(verification_config_col.update_one,
+    verification_config_col.update_one(
         {"guild_id": guild.id},
         {"$set": config_data},
         upsert=True
@@ -1126,75 +685,6 @@ async def verify_system(
         f"Assigned Not Verified role to {members_assigned} members.",
         ephemeral=True
     )
-
-@bot.check
-async def global_channel_check(ctx):
-    if ctx.author.id == OWNER_ID:
-        return True
-    if ctx.guild is None:
-        await ctx.send("⚠️ You are not allowed to use commands in DMs.")
-        return False
-    allowed = await get_allowed_channel()
-    if allowed is None:
-        return True
-    if ctx.channel.id == allowed:
-        return True
-    await ctx.send(f"⚠️ Commands are restricted to <#{allowed}>. Please use them there.")
-    return False
-
-@bot.tree.command(name="channel_set", description="Set the channel where commands are allowed")
-@app_commands.describe(channel="The channel to allow commands in")
-@app_commands.default_permissions(administrator=True)
-async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
-    await set_allowed_channel(channel.id)
-    await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
-
-@bot.tree.command(name="channel_view", description="View the currently allowed channel")
-async def channel_view(interaction: discord.Interaction):
-    allowed = await get_allowed_channel()
-    if allowed is None:
-        await interaction.response.send_message("ℹ️ No channel restriction is set. Commands are allowed everywhere.", ephemeral=True)
-    else:
-        channel = bot.get_channel(allowed)
-        if channel:
-            await interaction.response.send_message(f"ℹ️ Commands are restricted to {channel.mention}.", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
-
-@bot.tree.command(name="channel_clear", description="Remove the channel restriction")
-@app_commands.default_permissions(administrator=True)
-async def channel_clear(interaction: discord.Interaction):
-    await clear_allowed_channel()
-    await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
-
-@bot.tree.command(name="ping", description="Check bot latency")
-async def slash_ping(interaction: discord.Interaction):
-    start = time.perf_counter()
-    api_latency = round(bot.latency * 1000)
-    embed = discord.Embed(
-        title="🏓 Pong!",
-        color=0x2c3e99,
-        description=f"**API Latency:** `{api_latency} ms`"
-    )
-    end = time.perf_counter()
-    response_time = round((end - start) * 1000)
-    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
-    embed.set_footer(text=f"Requested by {interaction.user}")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.command(name="ping")
-async def prefix_ping(ctx):
-    start = time.perf_counter()
-    api_latency = round(bot.latency * 1000)
-    embed = discord.Embed(
-        title="🏓 Pong!",
-        color=0x2c3e99,
-        description=f"**API Latency:** `{api_latency} ms`"
-    )
-    end = time.perf_counter()
-    response_time = round((end - start) * 1000)
-    embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
-    await ctx.reply(embed=embed, mention_author=True)
 
 async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
@@ -1732,8 +1222,8 @@ async def db_status(ctx):
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
     if settings_col is not None and logs_col is not None:
-        await asyncio.to_thread(settings_col.delete_many, {})
-        await asyncio.to_thread(logs_col.delete_many, {})
+        settings_col.delete_many({})
+        logs_col.delete_many({})
     emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
     await ctx.reply(embed=emb, mention_author=True)
 
@@ -1777,12 +1267,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)",
-        inline=False
-    )
-    emb.add_field(
-        name="**Prefix Commands**",
-        value="`.level` - Check your current level and XP",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
@@ -1823,7 +1308,7 @@ async def deobf_command(ctx, *, link=None):
             else:
                 await ctx.reply(embed=emb, mention_author=True)
             if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
         success, result = deobfuscate_wearedevs(content)
@@ -1845,7 +1330,7 @@ async def deobf_command(ctx, *, link=None):
             else:
                 await ctx.reply(embed=emb, mention_author=True)
             if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
         timeout = 180 if len(content) > 500000 else 60
@@ -1874,7 +1359,7 @@ async def deobf_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         try: await proc.delete()
         except: pass
@@ -1908,7 +1393,7 @@ async def fetch_command(ctx, *, link=None):
         if file: await ctx.reply(embed=emb, file=file, mention_author=True)
         else: await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+            logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -1949,7 +1434,7 @@ async def env_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -1996,7 +1481,7 @@ async def obfuscate_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -2010,7 +1495,7 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
-    panels = await asyncio.to_thread(ticket_panels_col.find)
+    panels = ticket_panels_col.find()
     for panel in panels:
         panel_id = str(panel["_id"])
         button_style = discord.ButtonStyle.gray
@@ -2025,7 +1510,7 @@ async def on_ready():
         )
         bot.add_view(view)
 
-    configs = await asyncio.to_thread(verification_config_col.find)
+    configs = verification_config_col.find()
     for config in configs:
         guild_id = config["guild_id"]
         channel_id = config["channel_id"]
@@ -2052,15 +1537,7 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    active_configs = await asyncio.to_thread(active_checker_col.find)
-    for cfg in active_configs:
-        guild_id = cfg["guild_id"]
-        channel_id = cfg["channel_id"]
-        interval = cfg["interval"]
-        task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
-        active_checker_tasks[guild_id] = task
-
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
