@@ -309,7 +309,7 @@ async def level_up_system(
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    # Check if config exists and has any roles set (excluding "_channel")
+    # Check if config exists and has any roles (excluding "_channel")
     has_roles = False
     if config:
         level_roles = config.get("level_roles", {})
@@ -510,7 +510,6 @@ def parse_time_interval(time_str: str) -> int:
 
 async def active_checker_loop(guild_id, channel_id, interval_seconds):
     await bot.wait_until_ready()
-    # Sleep first to avoid immediate ping on restart
     await asyncio.sleep(interval_seconds)
     while not bot.is_closed():
         try:
