@@ -46,6 +46,8 @@ logs_col = None
 tickets_col = None
 ticket_panels_col = None
 verification_config_col = None
+level_config_col = None
+user_xp_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -56,6 +58,8 @@ try:
     tickets_col = db["tickets"]
     ticket_panels_col = db["ticket_panels"]
     verification_config_col = db["verification_config"]
+    level_config_col = db["level_config"]
+    user_xp_col = db["user_xp"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -64,6 +68,857 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+
+XP_PER_LEVEL = {
+    1: 20,
+    2: 50,
+    3: 100,
+    4: 150,
+    5: 200,
+    6: 250,
+    7: 300,
+    8: 350,
+    9: 400,
+    10: 500
+}
+
+def get_required_xp(level):
+    return XP_PER_LEVEL.get(level, 500)
+
+def get_level_config(guild_id):
+    doc = level_config_col.find_one({"guild_id": guild_id})
+    if not doc:
+        return None
+    return doc
+
+def set_level_config(guild_id, channel_id, level_roles):
+    level_config_col.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"channel_id": channel_id, "level_roles": level_roles}},
+        upsert=True
+    )
+
+def get_user_xp(guild_id, user_id):
+    doc = user_xp_col.find_one({"guild_id": guild_id, "user_id": user_id})
+    if not doc:
+        return {"xp": 0, "level": 0}
+    return {"xp": doc.get("xp", 0), "level": doc.get("level", 0)}
+
+def set_user_xp(guild_id, user_id, xp, level):
+    user_xp_col.update_one(
+        {"guild_id": guild_id, "user_id": user_id},
+        {"$set": {"xp": xp, "level": level}},
+        upsert=True
+    )
+
+def get_level_up_embed(user, level, guild):
+    if level == 1:
+        color = 0x1e90ff
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 1**!"
+        footer = "Keep chatting to level up further!"
+    elif level == 2:
+        color = 0x00bfff
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 2**!\nYou're getting the hang of it!"
+        footer = "Next level requires 50 XP"
+    elif level == 3:
+        color = 0x1e90ff
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 3**!\nYou're on fire!"
+        footer = "Next level requires 100 XP"
+    elif level == 4:
+        color = 0x4169e1
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 4**!\nAmazing progress!"
+        footer = "Next level requires 150 XP"
+    elif level == 5:
+        color = 0x6a5acd
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 5**!\nYou're a legend!"
+        footer = "Next level requires 200 XP"
+    elif level == 6:
+        color = 0x8a2be2
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 6**!\nIncredible!"
+        footer = "Next level requires 250 XP"
+    elif level == 7:
+        color = 0x9400d3
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 7**!\nYou're unstoppable!"
+        footer = "Next level requires 300 XP"
+    elif level == 8:
+        color = 0x9932cc
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 8**!\nPhenomenal!"
+        footer = "Next level requires 350 XP"
+    elif level == 9:
+        color = 0xba55d3
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level 9**!\nAlmost at the top!"
+        footer = "Next level requires 400 XP"
+    elif level == 10:
+        color = 0xff69b4
+        title = "🌟 LEVEL MAX! 🌟"
+        desc = f"{user.mention} has reached the **MAX LEVEL 10**!\nYou are the ultimate champion!"
+        footer = "You've mastered the level system!"
+    else:
+        color = 0x1e90ff
+        title = "🌟 Level Up!"
+        desc = f"{user.mention} has reached **Level {level}**!"
+        footer = "Keep going!"
+
+    embed = discord.Embed(
+        title=title,
+        description=desc,
+        color=color
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=footer)
+    return embed
+
+class LevelConfigView(discord.ui.View):
+    def __init__(self, guild, level, channel_id):
+        super().__init__(timeout=120)
+        self.guild = guild
+        self.level = level
+        self.channel_id = channel_id
+
+        roles = [r for r in guild.roles if r.name != "@everyone"]
+        roles.sort(key=lambda r: r.position, reverse=True)
+
+        if len(roles) > 25:
+            roles = roles[:25]
+            self.add_item(discord.ui.Button(label="Too many roles, only first 25 shown", disabled=True))
+
+        options = []
+        for r in roles:
+            options.append(discord.SelectOption(
+                label=r.name,
+                value=str(r.id),
+                description=f"ID: {r.id}",
+                emoji=None
+            ))
+
+        select = discord.ui.Select(
+            placeholder="Select roles to assign at this level",
+            min_values=level,
+            max_values=level,
+            options=options,
+            custom_id="level_role_select"
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user != interaction.message.interaction.user:
+            await interaction.response.send_message("You are not the one who ran the command.", ephemeral=True)
+            return
+
+        selected_role_ids = [int(value) for value in interaction.data["values"]]
+        config = get_level_config(self.guild.id)
+        if not config:
+            level_roles = {}
+        else:
+            level_roles = config.get("level_roles", {})
+        level_roles[str(self.level)] = selected_role_ids
+        set_level_config(self.guild.id, self.channel_id, level_roles)
+
+        embed = discord.Embed(
+            title="✅ Level Configuration Saved",
+            description=f"Level **{self.level}** will now assign the following roles:\n" +
+                        "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
+            color=0x1e90ff
+        )
+        embed.set_footer(text="You can re-run the command to change roles.")
+        await interaction.response.edit_message(embed=embed, view=None)
+
+@bot.tree.command(name="level-up-system", description="Configure the level-up system")
+@app_commands.describe(
+    level="The level number (1-10) to configure",
+    select_channel="The channel where level-up announcements will be sent"
+)
+@app_commands.default_permissions(administrator=True)
+async def level_up_system(
+    interaction: discord.Interaction,
+    level: int,
+    select_channel: discord.TextChannel
+):
+    if level < 1 or level > 10:
+        await interaction.response.send_message("Level must be between 1 and 10.", ephemeral=True)
+        return
+
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.response.send_message("I need the 'Manage Roles' permission to assign roles.", ephemeral=True)
+        return
+
+    config = get_level_config(interaction.guild.id)
+    if not config:
+        level_roles = {}
+    else:
+        level_roles = config.get("level_roles", {})
+    level_roles["_channel"] = select_channel.id
+    set_level_config(interaction.guild.id, select_channel.id, level_roles)
+
+    view = LevelConfigView(interaction.guild, level, select_channel.id)
+
+    embed = discord.Embed(
+        title="🎛️ Level Role Configuration",
+        description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.",
+        color=0x1e90ff
+    )
+    embed.set_footer(text="You have 2 minutes to choose.")
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    if not message.guild:
+        return
+
+    if message.content.startswith("."):
+        await bot.process_commands(message)
+        return
+
+    guild = message.guild
+    user = message.author
+
+    data = get_user_xp(guild.id, user.id)
+    current_xp = data["xp"]
+    current_level = data["level"]
+
+    current_xp += 1
+    next_level = current_level + 1
+
+    if next_level <= 10 and current_xp >= get_required_xp(next_level):
+        new_level = next_level
+        current_xp = 0
+        set_user_xp(guild.id, user.id, current_xp, new_level)
+
+        config = get_level_config(guild.id)
+        if config:
+            level_roles = config.get("level_roles", {})
+            role_ids = level_roles.get(str(new_level), [])
+            if role_ids:
+                roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
+                if roles_to_add:
+                    try:
+                        await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
+                    except discord.Forbidden:
+                        pass
+
+            channel_id = config.get("channel_id")
+            if channel_id:
+                channel = guild.get_channel(channel_id)
+                if channel:
+                    embed = get_level_up_embed(user, new_level, guild)
+                    await channel.send(content=user.mention, embed=embed)
+
+            try:
+                dm_embed = discord.Embed(
+                    title=f"🌟 Level Up in {guild.name}!",
+                    description=f"You've reached **Level {new_level}**!",
+                    color=0x1e90ff
+                )
+                dm_embed.set_thumbnail(url=user.display_avatar.url)
+                dm_embed.set_footer(text="Keep chatting to level up further!")
+                await user.send(embed=dm_embed)
+            except:
+                pass
+
+    else:
+        set_user_xp(guild.id, user.id, current_xp, current_level)
+
+    await bot.process_commands(message)
+
+class PersistentTicketPanel(discord.ui.View):
+    def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
+        super().__init__(timeout=None)
+        self.panel_id = panel_id
+        button = discord.ui.Button(
+            label=button_label,
+            style=button_style,
+            emoji=button_emoji,
+            custom_id=f"open_ticket:{panel_id}"
+        )
+        button.callback = self.open_ticket_callback
+        self.add_item(button)
+
+    async def open_ticket_callback(self, interaction: discord.Interaction):
+        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
+        if not panel:
+            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
+            return
+
+        existing = tickets_col.find_one({
+            "guild_id": interaction.guild.id,
+            "user_id": interaction.user.id,
+            "closed": False
+        })
+        if existing:
+            channel = interaction.guild.get_channel(existing["channel_id"])
+            if channel is None:
+                tickets_col.update_one({"_id": existing["_id"]}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}})
+                existing = None
+            else:
+                await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
+                return
+
+        guild = interaction.guild
+        category = discord.utils.get(guild.categories, name="Tickets")
+        if not category:
+            category = await guild.create_category("Tickets")
+
+        channel = await guild.create_text_channel(
+            name=f"ticket-{interaction.user.name}",
+            category=category,
+            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
+        )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
+        }
+        ping_role_ids = []
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+        for rid in ping_role_ids:
+            role = guild.get_role(rid)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        await channel.edit(overwrites=overwrites)
+
+        mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else None
+
+        embed_ticket = discord.Embed(
+            title="🎟️ Ticket Created",
+            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
+            color=panel.get("color", 0x2b2d31)
+        )
+        embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
+
+        ticket_doc = {
+            "guild_id": guild.id,
+            "channel_id": channel.id,
+            "user_id": interaction.user.id,
+            "claimed_by": None,
+            "closed": False,
+            "created_at": datetime.utcnow(),
+            "panel_id": self.panel_id
+        }
+        result_ticket = tickets_col.insert_one(ticket_doc)
+        ticket_id = str(result_ticket.inserted_id)
+        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
+
+        ticket_view = TicketView(ticket_id, panel)
+        await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
+        bot.add_view(ticket_view)
+
+        jump_view = discord.ui.View()
+        jump_button = discord.ui.Button(
+            label="Go to Ticket",
+            style=discord.ButtonStyle.primary,
+            url=channel.jump_url
+        )
+        jump_view.add_item(jump_button)
+
+        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
+
+class TicketView(discord.ui.View):
+    def __init__(self, ticket_id, panel, claim_disabled=None):
+        super().__init__(timeout=None)
+        self.ticket_id = ticket_id
+        self.panel = panel
+
+        close_button = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.danger,
+            emoji="🔒",
+            custom_id=f"close_ticket:{ticket_id}"
+        )
+        close_button.callback = self.close_callback
+        self.add_item(close_button)
+
+        if claim_disabled is None:
+            claim_disabled = not panel.get("claim_enabled", False)
+
+        claim_button = discord.ui.Button(
+            label="Claim",
+            style=discord.ButtonStyle.gray,
+            emoji="📜",
+            custom_id=f"claim_ticket:{ticket_id}",
+            disabled=claim_disabled
+        )
+        claim_button.callback = self.claim_callback
+        self.add_item(claim_button)
+
+    async def claim_callback(self, interaction: discord.Interaction):
+        ticket_id = interaction.data["custom_id"].split(":")[1]
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+            return
+
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
+            return
+
+        ping_role_ids = []
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission:
+            await interaction.response.send_message("❌ You are not able to claim this ticket. Only admins with the configured ping roles can claim.", ephemeral=True)
+            return
+
+        if ticket.get("claimed_by"):
+            await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
+            return
+
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
+
+        channel = interaction.guild.get_channel(ticket["channel_id"])
+        if channel:
+            creator_mention = f"<@{ticket['user_id']}>"
+            
+            embed_claim = discord.Embed(
+                title="🖐️ Ticket Claimed",
+                description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
+                color=discord.Color.green()
+            )
+            await channel.send(content=interaction.user.mention, embed=embed_claim)
+
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.embeds:
+                        embed_obj = msg.embeds[0]
+                        if embed_obj.title == "🎟️ Ticket Created":
+                            new_embed = discord.Embed.from_dict(embed_obj.to_dict())
+                            new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
+                            await msg.edit(embed=new_embed)
+                            break
+            except:
+                pass
+
+            new_view = TicketView(ticket_id, panel, claim_disabled=True)
+            new_view.clear_items()
+            close_button = discord.ui.Button(
+                label="Close",
+                style=discord.ButtonStyle.danger,
+                emoji="🔒",
+                custom_id=f"close_ticket:{ticket_id}"
+            )
+            close_button.callback = new_view.close_callback
+            new_view.add_item(close_button)
+            claim_button = discord.ui.Button(
+                label="Claim",
+                style=discord.ButtonStyle.gray,
+                emoji="📜",
+                custom_id=f"claim_ticket:{ticket_id}",
+                disabled=True
+            )
+            claim_button.callback = new_view.claim_callback
+            new_view.add_item(claim_button)
+            try:
+                async for msg in channel.history(limit=10):
+                    if msg.author == bot.user and msg.components:
+                        await msg.edit(view=new_view)
+                        break
+            except:
+                pass
+
+        await interaction.response.send_message("✅ Successfully Claimed the ticket", ephemeral=True)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        ticket_id = interaction.data["custom_id"].split(":")[1]
+        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+            return
+
+        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        if not panel:
+            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
+            return
+
+        ping_role_ids = []
+        if panel.get("ping_role"):
+            ping_role_ids.append(panel["ping_role"])
+        for i in range(2, 5):
+            rid = panel.get(f"ping_role_{i}")
+            if rid:
+                ping_role_ids.append(rid)
+
+        has_permission = False
+        for rid in ping_role_ids:
+            if discord.utils.get(interaction.user.roles, id=rid):
+                has_permission = True
+                break
+        if not has_permission and interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by"):
+            await interaction.response.send_message("❌ You are not able to close this ticket. Only the ticket creator, the claimer, or admins with the configured ping roles can close.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(ticket["channel_id"])
+        if channel:
+            await channel.delete(reason=f"Ticket closed by {interaction.user}")
+
+        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
+
+        try:
+            creator = await bot.fetch_user(ticket["user_id"])
+            if creator:
+                embed_dm = discord.Embed(
+                    title="Ticket Closed",
+                    description=f"This ticket has been closed by {interaction.user.mention}.",
+                    color=0x2b2d31
+                )
+                embed_dm.add_field(name="Ticket name", value=f"ticket-{creator.name}", inline=False)
+                embed_dm.add_field(name="Server", value=interaction.guild.name, inline=False)
+                embed_dm.set_footer(text="MonLua Bot")
+                await creator.send(embed=embed_dm)
+        except Exception as e:
+            print(f"Failed to DM user: {e}")
+
+        await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
+
+@bot.tree.command(name="ticket", description="Create a ticket panel")
+@app_commands.describe(
+    ping_role="The role to ping when a ticket is created",
+    enable_claim_button="Enable the Claim button for tickets",
+    description="Panel description (default: Open the ticket below 🎟️)",
+    footer="Footer text (default: Made by MonLua Bot)",
+    color="Embed color (hex code or name, default: #2b2d31)",
+    label_button="Button label (default: Open Ticket)",
+    label_emoji="Button emoji (default: 🎟️)",
+    label_color="Button color (gray, blurple, green, red, default: gray)",
+    ping_role_2="Additional role to ping (optional)",
+    ping_role_3="Additional role to ping (optional)",
+    ping_role_4="Additional role to ping (optional)"
+)
+@app_commands.default_permissions(administrator=True)
+async def ticket_command(
+    interaction: discord.Interaction,
+    ping_role: discord.Role,
+    enable_claim_button: bool,
+    description: str = "Open the ticket below 🎟️",
+    footer: str = "Made by MonLua Bot",
+    color: str = "#2b2d31",
+    label_button: str = "Open Ticket",
+    label_emoji: str = "🎟️",
+    label_color: str = "gray",
+    ping_role_2: discord.Role = None,
+    ping_role_3: discord.Role = None,
+    ping_role_4: discord.Role = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    color_val = None
+    if color.startswith("#"):
+        try:
+            color_val = int(color[1:], 16)
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Invalid hex color code. Please use a valid hex code (e.g., #ff0000).\nAvailable color names: `dark_magenta, light_grey, orange, gold, red, blue, dark_theme, darker_grey, blurple, yellow, greyple, magenta, dark_grey, default, dark_gold, green, dark_green, dark_orange, teal, dark_purple, purple, pink, lighter_grey, fuchsia, dark_red, dark_blue, dark_teal`",
+                ephemeral=True
+            )
+            return
+    else:
+        valid_colors = [
+            "dark_magenta", "light_grey", "orange", "gold", "red", "blue",
+            "dark_theme", "darker_grey", "blurple", "yellow", "greyple",
+            "magenta", "dark_grey", "default", "dark_gold", "green",
+            "dark_green", "dark_orange", "teal", "dark_purple", "purple",
+            "pink", "lighter_grey", "fuchsia", "dark_red", "dark_blue", "dark_teal"
+        ]
+        if color.lower() not in valid_colors:
+            await interaction.followup.send(
+                f"❌ Wrong color name. Please use a valid color name.\nAvailable colors: `{', '.join(valid_colors)}`",
+                ephemeral=True
+            )
+            return
+        try:
+            color_val = getattr(discord.Color, color.lower()).value
+        except AttributeError:
+            color_val = 0x2b2d31
+
+    color_map = {
+        "gray": discord.ButtonStyle.gray,
+        "blurple": discord.ButtonStyle.blurple,
+        "green": discord.ButtonStyle.green,
+        "red": discord.ButtonStyle.red
+    }
+    button_style = color_map.get(label_color.lower(), discord.ButtonStyle.gray)
+
+    panel_data = {
+        "guild_id": interaction.guild.id,
+        "channel_id": interaction.channel.id,
+        "ping_role": ping_role.id,
+        "ping_role_2": ping_role_2.id if ping_role_2 else None,
+        "ping_role_3": ping_role_3.id if ping_role_3 else None,
+        "ping_role_4": ping_role_4.id if ping_role_4 else None,
+        "claim_enabled": enable_claim_button,
+        "description": description,
+        "footer_text": footer,
+        "color": color_val,
+        "label_button": label_button,
+        "label_emoji": label_emoji,
+        "label_color": label_color,
+        "created_at": datetime.utcnow()
+    }
+    result = ticket_panels_col.insert_one(panel_data)
+    panel_id = str(result.inserted_id)
+
+    embed = discord.Embed(
+        title="🎫 Ticket System",
+        description=description,
+        color=color_val
+    )
+    embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
+
+    view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
+    await interaction.followup.send("✅ Successfully created a ticket panel", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=view)
+    bot.add_view(view)
+
+class VerifyView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        button = discord.ui.Button(
+            label="Verify",
+            style=discord.ButtonStyle.green,
+            emoji="👤",
+            custom_id=f"verify_{guild_id}"
+        )
+        button.callback = self.verify_callback
+        self.add_item(button)
+
+    async def verify_callback(self, interaction: discord.Interaction):
+        config = verification_config_col.find_one({"guild_id": interaction.guild.id})
+        if not config:
+            await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
+            return
+
+        not_verified_role_id = config["not_verified_role_id"]
+        verified_role_id = config["verified_role_id"]
+
+        not_verified_role = interaction.guild.get_role(not_verified_role_id)
+        verified_role = interaction.guild.get_role(verified_role_id)
+
+        if not not_verified_role or not verified_role:
+            await interaction.response.send_message("❌ Roles are missing. Contact an admin.", ephemeral=True)
+            return
+
+        if not_verified_role not in interaction.user.roles:
+            await interaction.response.send_message("✅ You are already verified.", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.remove_roles(not_verified_role, reason="User verified")
+            await interaction.user.add_roles(verified_role, reason="User verified")
+            await interaction.response.send_message("✅ You have been verified!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to manage your roles. Contact an admin.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="verify_system", description="Set up the verification system")
+@app_commands.describe(
+    select_role="The role to give upon verification",
+    channel="The channel where the verification message will be sent"
+)
+@app_commands.default_permissions(administrator=True)
+async def verify_system(
+    interaction: discord.Interaction,
+    select_role: discord.Role,
+    channel: discord.TextChannel
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    if not interaction.guild.me.guild_permissions.manage_roles:
+        await interaction.followup.send("❌ I need the 'Manage Roles' permission to set up verification.", ephemeral=True)
+        return
+    if not interaction.guild.me.guild_permissions.manage_channels:
+        await interaction.followup.send("❌ I need the 'Manage Channels' permission to set up verification.", ephemeral=True)
+        return
+
+    bot_top_role = interaction.guild.me.top_role
+    if bot_top_role <= select_role:
+        await interaction.followup.send(
+            "❌ My highest role is not above the selected verification role. "
+            "Please move my role higher in the role hierarchy, or choose a lower role.",
+            ephemeral=True
+        )
+        return
+
+    not_verified_role = discord.utils.get(guild.roles, name="Not Verified")
+    if not not_verified_role:
+        try:
+            not_verified_role = await guild.create_role(
+                name="Not Verified",
+                reason="Verification system role",
+                hoist=False,
+                mentionable=False
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to create roles.", ephemeral=True)
+            return
+
+    async def update_channel_perms(channel_obj):
+        if channel_obj == channel:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                not_verified_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=False,
+                    create_public_threads=False,
+                    create_private_threads=False
+                ),
+                select_role: discord.PermissionOverwrite(view_channel=False)
+            }
+        else:
+            overwrites = {
+                not_verified_role: discord.PermissionOverwrite(view_channel=False),
+                select_role: discord.PermissionOverwrite(view_channel=True)
+            }
+        try:
+            await channel_obj.edit(overwrites=overwrites)
+        except:
+            pass
+
+    channels_to_update = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.CategoryChannel))]
+    sem = asyncio.Semaphore(10)
+
+    async def apply_permissions(ch):
+        async with sem:
+            await update_channel_perms(ch)
+
+    tasks = [apply_permissions(ch) for ch in channels_to_update]
+    await asyncio.gather(*tasks)
+
+    members_assigned = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if not_verified_role not in member.roles:
+            try:
+                await member.add_roles(not_verified_role, reason="Verification system initialization")
+                members_assigned += 1
+                if members_assigned % 10 == 0:
+                    await asyncio.sleep(0.5)
+            except:
+                continue
+
+    embed = discord.Embed(
+        title="🔐 Server Verification",
+        description=(
+            "Welcome to the server! We are glad to Have you here.\n\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
+            "This helps us keep the server safe and secure."
+        ),
+        color=0x1e90ff
+    )
+    embed.set_footer(text="Verification System")
+
+    view = VerifyView(guild.id)
+    msg = await channel.send(embed=embed, view=view)
+    bot.add_view(view, message_id=msg.id)
+
+    config_data = {
+        "guild_id": guild.id,
+        "not_verified_role_id": not_verified_role.id,
+        "verified_role_id": select_role.id,
+        "channel_id": channel.id,
+        "message_id": msg.id
+    }
+    verification_config_col.update_one(
+        {"guild_id": guild.id},
+        {"$set": config_data},
+        upsert=True
+    )
+
+    await interaction.followup.send(
+        f"✅ Verification system set up!\n"
+        f"Not Verified role: {not_verified_role.mention}\n"
+        f"Verified role: {select_role.mention}\n"
+        f"Verification channel: {channel.mention}\n"
+        f"Assigned Not Verified role to {members_assigned} members.",
+        ephemeral=True
+    )
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as: {bot.user}")
+    try:
+        await bot.tree.sync()
+        print("✅ Slash commands synced globally")
+    except Exception as e:
+        print(f"⚠️ Failed to sync slash commands: {e}")
+
+    panels = ticket_panels_col.find()
+    for panel in panels:
+        panel_id = str(panel["_id"])
+        button_style = discord.ButtonStyle.gray
+        color_map = {"gray": discord.ButtonStyle.gray, "blurple": discord.ButtonStyle.blurple, "green": discord.ButtonStyle.green, "red": discord.ButtonStyle.red}
+        if panel.get("label_color"):
+            button_style = color_map.get(panel["label_color"].lower(), discord.ButtonStyle.gray)
+        view = PersistentTicketPanel(
+            panel_id,
+            panel.get("label_button", "Open Ticket"),
+            panel.get("label_emoji", "🎟️"),
+            button_style
+        )
+        bot.add_view(view)
+
+    configs = verification_config_col.find()
+    for config in configs:
+        guild_id = config["guild_id"]
+        channel_id = config["channel_id"]
+        message_id = config["message_id"]
+        guild = bot.get_guild(guild_id)
+        if guild:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    new_embed = discord.Embed(
+                        title="🔐 Server Verification",
+                        description=(
+                            "Welcome to the server! We are glad to Have you here.\n\n"
+                            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
+                            "This helps us keep the server safe and secure."
+                        ),
+                        color=0x1e90ff
+                    )
+                    new_embed.set_footer(text="Verification System")
+                    view = VerifyView(guild_id)
+                    await msg.edit(embed=new_embed, view=view)
+                    bot.add_view(view, message_id=message_id)
+                except Exception as e:
+                    print(f"Failed to update verification message: {e}")
+
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level-up-system"))
+    if db is not None:
+        print(f"✅ Database Ready: {db.name}")
 
 def get_allowed_channel():
     if settings_col is None:
@@ -668,629 +1523,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ========== TICKET SYSTEM ==========
-
-class PersistentTicketPanel(discord.ui.View):
-    def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
-        super().__init__(timeout=None)
-        self.panel_id = panel_id
-        button = discord.ui.Button(
-            label=button_label,
-            style=button_style,
-            emoji=button_emoji,
-            custom_id=f"open_ticket:{panel_id}"
-        )
-        button.callback = self.open_ticket_callback
-        self.add_item(button)
-
-    async def open_ticket_callback(self, interaction: discord.Interaction):
-        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
-        if not panel:
-            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
-            return
-
-        existing = tickets_col.find_one({
-            "guild_id": interaction.guild.id,
-            "user_id": interaction.user.id,
-            "closed": False
-        })
-        if existing:
-            channel = interaction.guild.get_channel(existing["channel_id"])
-            if channel is None:
-                tickets_col.update_one({"_id": existing["_id"]}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}})
-                existing = None
-            else:
-                await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
-                return
-
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if not category:
-            category = await guild.create_category("Tickets")
-
-        channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}",
-            category=category,
-            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
-        )
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
-        }
-        ping_role_ids = []
-        if panel.get("ping_role"):
-            ping_role_ids.append(panel["ping_role"])
-        for i in range(2, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-        for rid in ping_role_ids:
-            role = guild.get_role(rid)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-        await channel.edit(overwrites=overwrites)
-
-        mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else None
-
-        embed_ticket = discord.Embed(
-            title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
-            color=panel.get("color", 0x2b2d31)
-        )
-        embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
-
-        ticket_doc = {
-            "guild_id": guild.id,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "claimed_by": None,
-            "closed": False,
-            "created_at": datetime.utcnow(),
-            "panel_id": self.panel_id
-        }
-        result_ticket = tickets_col.insert_one(ticket_doc)
-        ticket_id = str(result_ticket.inserted_id)
-        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
-
-        ticket_view = TicketView(ticket_id, panel)
-        await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
-        bot.add_view(ticket_view)
-
-        jump_view = discord.ui.View()
-        jump_button = discord.ui.Button(
-            label="Go to Ticket",
-            style=discord.ButtonStyle.primary,
-            url=channel.jump_url
-        )
-        jump_view.add_item(jump_button)
-
-        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
-
-class TicketView(discord.ui.View):
-    def __init__(self, ticket_id, panel, claim_disabled=None):
-        super().__init__(timeout=None)
-        self.ticket_id = ticket_id
-        self.panel = panel
-
-        close_button = discord.ui.Button(
-            label="Close",
-            style=discord.ButtonStyle.danger,
-            emoji="🔒",
-            custom_id=f"close_ticket:{ticket_id}"
-        )
-        close_button.callback = self.close_callback
-        self.add_item(close_button)
-
-        if claim_disabled is None:
-            claim_disabled = not panel.get("claim_enabled", False)
-
-        claim_button = discord.ui.Button(
-            label="Claim",
-            style=discord.ButtonStyle.gray,
-            emoji="📜",
-            custom_id=f"claim_ticket:{ticket_id}",
-            disabled=claim_disabled
-        )
-        claim_button.callback = self.claim_callback
-        self.add_item(claim_button)
-
-    async def claim_callback(self, interaction: discord.Interaction):
-        ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
-        if not ticket:
-            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
-            return
-
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
-        if not panel:
-            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
-            return
-
-        ping_role_ids = []
-        if panel.get("ping_role"):
-            ping_role_ids.append(panel["ping_role"])
-        for i in range(2, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-
-        has_permission = False
-        for rid in ping_role_ids:
-            if discord.utils.get(interaction.user.roles, id=rid):
-                has_permission = True
-                break
-        if not has_permission:
-            await interaction.response.send_message("❌ You are not able to claim this ticket. Only admins with the configured ping roles can claim.", ephemeral=True)
-            return
-
-        if ticket.get("claimed_by"):
-            await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
-            return
-
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
-
-        channel = interaction.guild.get_channel(ticket["channel_id"])
-        if channel:
-            creator_mention = f"<@{ticket['user_id']}>"
-            
-            embed_claim = discord.Embed(
-                title="🖐️ Ticket Claimed",
-                description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
-                color=discord.Color.green()
-            )
-            await channel.send(content=interaction.user.mention, embed=embed_claim)
-
-            try:
-                async for msg in channel.history(limit=10):
-                    if msg.author == bot.user and msg.embeds:
-                        embed_obj = msg.embeds[0]
-                        if embed_obj.title == "🎟️ Ticket Created":
-                            new_embed = discord.Embed.from_dict(embed_obj.to_dict())
-                            new_embed.description = f"{new_embed.description}\n\n**Claimed by:** {interaction.user.mention}"
-                            await msg.edit(embed=new_embed)
-                            break
-            except:
-                pass
-
-            new_view = TicketView(ticket_id, panel, claim_disabled=True)
-            new_view.clear_items()
-            close_button = discord.ui.Button(
-                label="Close",
-                style=discord.ButtonStyle.danger,
-                emoji="🔒",
-                custom_id=f"close_ticket:{ticket_id}"
-            )
-            close_button.callback = new_view.close_callback
-            new_view.add_item(close_button)
-            claim_button = discord.ui.Button(
-                label="Claim",
-                style=discord.ButtonStyle.gray,
-                emoji="📜",
-                custom_id=f"claim_ticket:{ticket_id}",
-                disabled=True
-            )
-            claim_button.callback = new_view.claim_callback
-            new_view.add_item(claim_button)
-            try:
-                async for msg in channel.history(limit=10):
-                    if msg.author == bot.user and msg.components:
-                        await msg.edit(view=new_view)
-                        break
-            except:
-                pass
-
-        await interaction.response.send_message("✅ Successfully Claimed the ticket", ephemeral=True)
-
-    async def close_callback(self, interaction: discord.Interaction):
-        ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
-        if not ticket:
-            await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
-            return
-
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
-        if not panel:
-            await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
-            return
-
-        ping_role_ids = []
-        if panel.get("ping_role"):
-            ping_role_ids.append(panel["ping_role"])
-        for i in range(2, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-
-        has_permission = False
-        for rid in ping_role_ids:
-            if discord.utils.get(interaction.user.roles, id=rid):
-                has_permission = True
-                break
-        if not has_permission and interaction.user.id != ticket["user_id"] and interaction.user.id != ticket.get("claimed_by"):
-            await interaction.response.send_message("❌ You are not able to close this ticket. Only the ticket creator, the claimer, or admins with the configured ping roles can close.", ephemeral=True)
-            return
-
-        channel = interaction.guild.get_channel(ticket["channel_id"])
-        if channel:
-            await channel.delete(reason=f"Ticket closed by {interaction.user}")
-
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
-
-        try:
-            creator = await bot.fetch_user(ticket["user_id"])
-            if creator:
-                embed_dm = discord.Embed(
-                    title="Ticket Closed",
-                    description=f"This ticket has been closed by {interaction.user.mention}.",
-                    color=0x2b2d31
-                )
-                embed_dm.add_field(name="Ticket name", value=f"ticket-{creator.name}", inline=False)
-                embed_dm.add_field(name="Server", value=interaction.guild.name, inline=False)
-                embed_dm.set_footer(text="MonLua Bot")
-                await creator.send(embed=embed_dm)
-        except Exception as e:
-            print(f"Failed to DM user: {e}")
-
-        await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
-
-@bot.tree.command(name="ticket", description="Create a ticket panel")
-@app_commands.describe(
-    ping_role="The role to ping when a ticket is created",
-    enable_claim_button="Enable the Claim button for tickets",
-    description="Panel description (default: Open the ticket below 🎟️)",
-    footer="Footer text (default: Made by MonLua Bot)",
-    color="Embed color (hex code or name, default: #2b2d31)",
-    label_button="Button label (default: Open Ticket)",
-    label_emoji="Button emoji (default: 🎟️)",
-    label_color="Button color (gray, blurple, green, red, default: gray)",
-    ping_role_2="Additional role to ping (optional)",
-    ping_role_3="Additional role to ping (optional)",
-    ping_role_4="Additional role to ping (optional)"
-)
-@app_commands.default_permissions(administrator=True)
-async def ticket_command(
-    interaction: discord.Interaction,
-    ping_role: discord.Role,
-    enable_claim_button: bool,
-    description: str = "Open the ticket below 🎟️",
-    footer: str = "Made by MonLua Bot",
-    color: str = "#2b2d31",
-    label_button: str = "Open Ticket",
-    label_emoji: str = "🎟️",
-    label_color: str = "gray",
-    ping_role_2: discord.Role = None,
-    ping_role_3: discord.Role = None,
-    ping_role_4: discord.Role = None
-):
-    await interaction.response.defer(ephemeral=True)
-
-    color_val = None
-    if color.startswith("#"):
-        try:
-            color_val = int(color[1:], 16)
-        except ValueError:
-            await interaction.followup.send(
-                "❌ Invalid hex color code. Please use a valid hex code (e.g., #ff0000).\nAvailable color names: `dark_magenta, light_grey, orange, gold, red, blue, dark_theme, darker_grey, blurple, yellow, greyple, magenta, dark_grey, default, dark_gold, green, dark_green, dark_orange, teal, dark_purple, purple, pink, lighter_grey, fuchsia, dark_red, dark_blue, dark_teal`",
-                ephemeral=True
-            )
-            return
-    else:
-        valid_colors = [
-            "dark_magenta", "light_grey", "orange", "gold", "red", "blue",
-            "dark_theme", "darker_grey", "blurple", "yellow", "greyple",
-            "magenta", "dark_grey", "default", "dark_gold", "green",
-            "dark_green", "dark_orange", "teal", "dark_purple", "purple",
-            "pink", "lighter_grey", "fuchsia", "dark_red", "dark_blue", "dark_teal"
-        ]
-        if color.lower() not in valid_colors:
-            await interaction.followup.send(
-                f"❌ Wrong color name. Please use a valid color name.\nAvailable colors: `{', '.join(valid_colors)}`",
-                ephemeral=True
-            )
-            return
-        try:
-            color_val = getattr(discord.Color, color.lower()).value
-        except AttributeError:
-            color_val = 0x2b2d31
-
-    color_map = {
-        "gray": discord.ButtonStyle.gray,
-        "blurple": discord.ButtonStyle.blurple,
-        "green": discord.ButtonStyle.green,
-        "red": discord.ButtonStyle.red
-    }
-    button_style = color_map.get(label_color.lower(), discord.ButtonStyle.gray)
-
-    panel_data = {
-        "guild_id": interaction.guild.id,
-        "channel_id": interaction.channel.id,
-        "ping_role": ping_role.id,
-        "ping_role_2": ping_role_2.id if ping_role_2 else None,
-        "ping_role_3": ping_role_3.id if ping_role_3 else None,
-        "ping_role_4": ping_role_4.id if ping_role_4 else None,
-        "claim_enabled": enable_claim_button,
-        "description": description,
-        "footer_text": footer,
-        "color": color_val,
-        "label_button": label_button,
-        "label_emoji": label_emoji,
-        "label_color": label_color,
-        "created_at": datetime.utcnow()
-    }
-    result = ticket_panels_col.insert_one(panel_data)
-    panel_id = str(result.inserted_id)
-
-    embed = discord.Embed(
-        title="🎫 Ticket System",
-        description=description,
-        color=color_val
-    )
-    embed.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
-
-    view = PersistentTicketPanel(panel_id, label_button, label_emoji, button_style)
-    await interaction.followup.send("✅ Successfully created a ticket panel", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=view)
-    bot.add_view(view)
-
-# ========== VERIFICATION SYSTEM ==========
-
-class VerifyView(discord.ui.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=None)
-        self.guild_id = guild_id
-        button = discord.ui.Button(
-            label="Verify",
-            style=discord.ButtonStyle.green,
-            emoji="👤",
-            custom_id=f"verify_{guild_id}"
-        )
-        button.callback = self.verify_callback
-        self.add_item(button)
-
-    async def verify_callback(self, interaction: discord.Interaction):
-        config = verification_config_col.find_one({"guild_id": interaction.guild.id})
-        if not config:
-            await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
-            return
-
-        not_verified_role_id = config["not_verified_role_id"]
-        verified_role_id = config["verified_role_id"]
-
-        not_verified_role = interaction.guild.get_role(not_verified_role_id)
-        verified_role = interaction.guild.get_role(verified_role_id)
-
-        if not not_verified_role or not verified_role:
-            await interaction.response.send_message("❌ Roles are missing. Contact an admin.", ephemeral=True)
-            return
-
-        if not_verified_role not in interaction.user.roles:
-            await interaction.response.send_message("✅ You are already verified.", ephemeral=True)
-            return
-
-        try:
-            await interaction.user.remove_roles(not_verified_role, reason="User verified")
-            await interaction.user.add_roles(verified_role, reason="User verified")
-            await interaction.response.send_message("✅ You have been verified!", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I don't have permission to manage your roles. Contact an admin.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
-
-@bot.tree.command(name="verify_system", description="Set up the verification system")
-@app_commands.describe(
-    select_role="The role to give upon verification",
-    channel="The channel where the verification message will be sent"
-)
-@app_commands.default_permissions(administrator=True)
-async def verify_system(
-    interaction: discord.Interaction,
-    select_role: discord.Role,
-    channel: discord.TextChannel
-):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-
-    # Check bot permissions
-    if not interaction.guild.me.guild_permissions.manage_roles:
-        await interaction.followup.send("❌ I need the 'Manage Roles' permission to set up verification.", ephemeral=True)
-        return
-    if not interaction.guild.me.guild_permissions.manage_channels:
-        await interaction.followup.send("❌ I need the 'Manage Channels' permission to set up verification.", ephemeral=True)
-        return
-
-    # Check if the bot's highest role is above the selected role (to manage it)
-    bot_top_role = interaction.guild.me.top_role
-    if bot_top_role <= select_role:
-        await interaction.followup.send(
-            "❌ My highest role is not above the selected verification role. "
-            "Please move my role higher in the role hierarchy, or choose a lower role.",
-            ephemeral=True
-        )
-        return
-
-    # 1. Create or get "Not Verified" role
-    not_verified_role = discord.utils.get(guild.roles, name="Not Verified")
-    if not not_verified_role:
-        try:
-            not_verified_role = await guild.create_role(
-                name="Not Verified",
-                reason="Verification system role",
-                hoist=False,
-                mentionable=False
-            )
-        except discord.Forbidden:
-            await interaction.followup.send("❌ I don't have permission to create roles.", ephemeral=True)
-            return
-
-    # 2. Set up channel permissions for all channels
-    async def update_channel_perms(channel_obj):
-        if channel_obj == channel:
-            # Verification channel permissions
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                not_verified_role: discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=False,
-                    create_public_threads=False,
-                    create_private_threads=False
-                ),
-                select_role: discord.PermissionOverwrite(view_channel=False)
-            }
-        else:
-            # All other channels
-            overwrites = {
-                not_verified_role: discord.PermissionOverwrite(view_channel=False),
-                select_role: discord.PermissionOverwrite(view_channel=True)
-            }
-        try:
-            await channel_obj.edit(overwrites=overwrites)
-        except discord.Forbidden:
-            # Skip if we lack permissions
-            pass
-        except discord.HTTPException as e:
-            # Log but continue
-            print(f"Failed to update permissions for {channel_obj.name}: {e}")
-
-    # Apply to all text channels and categories (skip voice/stage to avoid permission issues)
-    channels_to_update = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.CategoryChannel))]
-    sem = asyncio.Semaphore(10)
-
-    async def apply_permissions(ch):
-        async with sem:
-            await update_channel_perms(ch)
-
-    tasks = [apply_permissions(ch) for ch in channels_to_update]
-    await asyncio.gather(*tasks)
-
-    # 3. Assign Not Verified role to all members (except bots and admins? we will assign to all non-bots)
-    members_assigned = 0
-    async for member in guild.fetch_members(limit=None):
-        if member.bot:
-            continue
-        if not_verified_role not in member.roles:
-            try:
-                await member.add_roles(not_verified_role, reason="Verification system initialization")
-                members_assigned += 1
-                if members_assigned % 10 == 0:
-                    await asyncio.sleep(0.5)
-            except discord.Forbidden:
-                continue
-            except Exception as e:
-                print(f"Error adding role to {member}: {e}")
-
-    # 4. Create embed with new formatting
-    embed = discord.Embed(
-        title="🔐 Server Verification",
-        description=(
-            "Welcome to the server! We are glad to Have you here.\n\n"
-            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
-            "This helps us keep the server safe and secure."
-        ),
-        color=0x1e90ff  # Light Blue
-    )
-    embed.set_footer(text="Verification System")
-
-    # 5. Send the embed with the verify button
-    view = VerifyView(guild.id)
-    msg = await channel.send(embed=embed, view=view)
-    bot.add_view(view, message_id=msg.id)
-
-    # 6. Store config in MongoDB
-    config_data = {
-        "guild_id": guild.id,
-        "not_verified_role_id": not_verified_role.id,
-        "verified_role_id": select_role.id,
-        "channel_id": channel.id,
-        "message_id": msg.id
-    }
-    verification_config_col.update_one(
-        {"guild_id": guild.id},
-        {"$set": config_data},
-        upsert=True
-    )
-
-    await interaction.followup.send(
-        f"✅ Verification system set up!\n"
-        f"Not Verified role: {not_verified_role.mention}\n"
-        f"Verified role: {select_role.mention}\n"
-        f"Verification channel: {channel.mention}\n"
-        f"Assigned Not Verified role to {members_assigned} members.",
-        ephemeral=True
-    )
-
-# ========== END VERIFICATION ==========
-
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as: {bot.user}")
-    try:
-        await bot.tree.sync()
-        print("✅ Slash commands synced globally")
-    except Exception as e:
-        print(f"⚠️ Failed to sync slash commands: {e}")
-
-    # Load ticket panels
-    panels = ticket_panels_col.find()
-    for panel in panels:
-        panel_id = str(panel["_id"])
-        button_style = discord.ButtonStyle.gray
-        color_map = {"gray": discord.ButtonStyle.gray, "blurple": discord.ButtonStyle.blurple, "green": discord.ButtonStyle.green, "red": discord.ButtonStyle.red}
-        if panel.get("label_color"):
-            button_style = color_map.get(panel["label_color"].lower(), discord.ButtonStyle.gray)
-        view = PersistentTicketPanel(
-            panel_id,
-            panel.get("label_button", "Open Ticket"),
-            panel.get("label_emoji", "🎟️"),
-            button_style
-        )
-        bot.add_view(view)
-
-    # Load verification messages and update them with the new embed
-    configs = verification_config_col.find()
-    for config in configs:
-        guild_id = config["guild_id"]
-        channel_id = config["channel_id"]
-        message_id = config["message_id"]
-        guild = bot.get_guild(guild_id)
-        if guild:
-            channel = guild.get_channel(channel_id)
-            if channel:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    # Update embed to new format if it's not already
-                    if msg.embeds:
-                        embed = msg.embeds[0]
-                        # Check if title has lock emoji, if not, update
-                        if embed.title != "🔐 Server Verification":
-                            new_embed = discord.Embed(
-                                title="🔐 Server Verification",
-                                description=(
-                                    "Welcome to the server! We are glad to Have you here.\n\n"
-                                    "To gain access to all the channels and features, please verify yourself by clicking the *VERIFY* button below.\n"
-                                    "This helps us keep the server safe and secure."
-                                ),
-                                color=0x1e90ff
-                            )
-                            new_embed.set_footer(text="Verification System")
-                            # Preserve the view
-                            view = VerifyView(guild_id)
-                            await msg.edit(embed=new_embed, view=view)
-                            bot.add_view(view, message_id=message_id)
-                        else:
-                            # Just ensure view is attached
-                            view = VerifyView(guild_id)
-                            await msg.edit(view=view)
-                            bot.add_view(view, message_id=message_id)
-                except Exception as e:
-                    print(f"Failed to update verification message: {e}")
-
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system"))
-    if db is not None:
-        print(f"✅ Database Ready: {db.name}")
-
 @bot.group(name="db", invoke_without_command=True)
 async def db_group(ctx):
     await delete_cmds_only(ctx)
@@ -1358,7 +1590,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level-up-system` - Configure level-up roles (admin only)",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
