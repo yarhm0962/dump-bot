@@ -203,11 +203,12 @@ def get_level_up_embed(user, level, guild, roles_added=None):
     return embed
 
 class LevelConfigView(discord.ui.View):
-    def __init__(self, guild, level, channel_id):
+    def __init__(self, guild, level, channel_id, is_update=False):
         super().__init__(timeout=120)
         self.guild = guild
         self.level = level
         self.channel_id = channel_id
+        self.is_update = is_update
 
         roles = [r for r in guild.roles if r.name != "@everyone"]
         roles.sort(key=lambda r: r.position, reverse=True)
@@ -244,14 +245,16 @@ class LevelConfigView(discord.ui.View):
         config = get_level_config(self.guild.id)
         if not config:
             level_roles = {}
+            enabled = True
         else:
             level_roles = config.get("level_roles", {})
+            enabled = config.get("enabled", True)
         level_roles[str(self.level)] = selected_role_ids
-        enabled = config.get("enabled", True) if config else True
         set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
 
+        action = "updated" if self.is_update else "saved"
         embed = discord.Embed(
-            title="✅ Level Configuration Saved",
+            title=f"✅ Level Configuration {action.capitalize()}",
             description=f"Level **{self.level}** will now assign the following roles:\n" +
                         "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
             color=0x1e90ff
@@ -263,18 +266,24 @@ class LevelConfigView(discord.ui.View):
 @app_commands.describe(
     level="The level number (1-10) to configure",
     select_channel="The channel where level-up announcements will be sent",
-    enabled="Enable or disable the level system (optional)"
+    enabled="Enable or disable the level system (optional, True/False)",
+    update="Update an existing configuration (optional, True/False)"
 )
 @app_commands.choices(enabled=[
-    app_commands.Choice(name="On", value="On"),
-    app_commands.Choice(name="Off", value="Off")
+    app_commands.Choice(name="True", value="True"),
+    app_commands.Choice(name="False", value="False")
+])
+@app_commands.choices(update=[
+    app_commands.Choice(name="True", value="True"),
+    app_commands.Choice(name="False", value="False")
 ])
 @app_commands.default_permissions(administrator=True)
 async def level_up_system(
     interaction: discord.Interaction,
     level: int,
     select_channel: discord.TextChannel,
-    enabled: app_commands.Choice[str] = None
+    enabled: app_commands.Choice[str] = None,
+    update: app_commands.Choice[str] = None
 ):
     if level < 1 or level > 10:
         await interaction.response.send_message("Level must be between 1 and 10.", ephemeral=True)
@@ -286,8 +295,9 @@ async def level_up_system(
 
     config = get_level_config(interaction.guild.id)
     if config:
+        # If enabled is provided, update enabled status and return
         if enabled is not None:
-            new_status = True if enabled.value == "On" else False
+            new_status = True if enabled.value == "True" else False
             update_level_enabled(interaction.guild.id, new_status)
             status_text = "enabled" if new_status else "disabled"
             embed = discord.Embed(
@@ -297,19 +307,37 @@ async def level_up_system(
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        else:
-            await interaction.response.send_message(
-                "❌ Your Level System is already set on this Server!\n"
-                "Use `/level_up_system` with `enabled: On/Off` to toggle the system.",
-                ephemeral=True
+
+        # If update is True, proceed to update roles for this level
+        if update is not None and update.value == "True":
+            # Update channel in config
+            level_roles = config.get("level_roles", {})
+            set_level_config(interaction.guild.id, select_channel.id, level_roles, config.get("enabled", True))
+            # Show dropdown for role selection
+            view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True)
+            embed = discord.Embed(
+                title="🎛️ Level Role Update",
+                description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
+                color=0x1e90ff
             )
+            embed.set_footer(text="You have 2 minutes to choose.")
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
 
+        # Otherwise, error
+        await interaction.response.send_message(
+            "❌ Your Level System is already set on this Server!\n"
+            "Use `/level_up_system` with `update: True` to modify existing configuration, or `enabled: True/False` to toggle the system.",
+            ephemeral=True
+        )
+        return
+
+    # No config: initial setup
     level_roles = {"_channel": select_channel.id}
-    enabled_status = True if enabled is None or enabled.value == "On" else False
+    enabled_status = True if enabled is None or enabled.value == "True" else False
     set_level_config(interaction.guild.id, select_channel.id, level_roles, enabled_status)
 
-    view = LevelConfigView(interaction.guild, level, select_channel.id)
+    view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False)
 
     embed = discord.Embed(
         title="🎛️ Level Role Configuration",
@@ -535,19 +563,16 @@ async def active_checker(
             )
             return
         else:
-            # Cancel existing task if any
             if guild_id in active_checker_tasks:
                 active_checker_tasks[guild_id].cancel()
                 del active_checker_tasks[guild_id]
 
-    # Update or insert config
     active_checker_col.update_one(
         {"guild_id": guild_id},
         {"$set": {"channel_id": channel.id, "interval": interval}},
         upsert=True
     )
 
-    # Start new task
     task = asyncio.create_task(active_checker_loop(guild_id, channel.id, interval))
     active_checker_tasks[guild_id] = task
 
@@ -1145,7 +1170,6 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    # Reload active checkers
     active_configs = active_checker_col.find()
     for cfg in active_configs:
         guild_id = cfg["guild_id"]
