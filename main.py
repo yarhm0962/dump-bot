@@ -551,6 +551,10 @@ async def level_command(ctx):
         embed.set_footer(text=f"{xp} XP until Level {next_level}")
         await ctx.reply(embed=embed, mention_author=False)
 
+@bot.command(name="lvl")
+async def level_shortcut(ctx):
+    await level_command(ctx)
+
 active_checker_tasks = {}
 
 def parse_time_interval(time_str: str) -> int:
@@ -1840,7 +1844,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Prefix Commands**",
-        value="`.level` - Check your current level and XP",
+        value="`.level` / `.lvl` - Check your current level and XP",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
@@ -2121,7 +2125,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level/.lvl"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
