@@ -71,57 +71,61 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-XP_PER_LEVEL = {
-    1: 20,
-    2: 50,
-    3: 100,
-    4: 150,
-    5: 200,
-    6: 250,
-    7: 300,
-    8: 350,
-    9: 400,
-    10: 500
-}
-
-def get_required_xp(level):
-    return XP_PER_LEVEL.get(level, 500)
-
-def get_level_config(guild_id):
-    doc = level_config_col.find_one({"guild_id": guild_id})
-    if not doc:
+async def get_allowed_channel():
+    if settings_col is None:
         return None
-    return doc
+    doc = await asyncio.to_thread(settings_col.find_one, {"key": "command_channel"})
+    if doc:
+        return doc.get("value")
+    return None
 
-def set_level_config(guild_id, channel_id, level_roles, enabled=True):
-    level_config_col.update_one(
-        {"guild_id": guild_id},
-        {"$set": {"channel_id": channel_id, "level_roles": level_roles, "enabled": enabled}},
-        upsert=True
-    )
+async def set_allowed_channel(channel_id):
+    if settings_col is not None:
+        await asyncio.to_thread(settings_col.update_one, {"key": "command_channel"}, {"$set": {"value": channel_id}}, upsert=True)
 
-def update_level_enabled(guild_id, enabled):
-    level_config_col.update_one(
-        {"guild_id": guild_id},
-        {"$set": {"enabled": enabled}},
-        upsert=True
-    )
+async def clear_allowed_channel():
+    if settings_col is not None:
+        await asyncio.to_thread(settings_col.delete_one, {"key": "command_channel"})
 
-def get_user_xp(guild_id, user_id):
-    doc = user_xp_col.find_one({"guild_id": guild_id, "user_id": user_id})
+async def get_level_config(guild_id):
+    if level_config_col is None:
+        return None
+    return await asyncio.to_thread(level_config_col.find_one, {"guild_id": guild_id})
+
+async def set_level_config(guild_id, channel_id, level_roles, enabled=True):
+    if level_config_col is not None:
+        await asyncio.to_thread(level_config_col.update_one,
+            {"guild_id": guild_id},
+            {"$set": {"channel_id": channel_id, "level_roles": level_roles, "enabled": enabled}},
+            upsert=True
+        )
+
+async def update_level_enabled(guild_id, enabled):
+    if level_config_col is not None:
+        await asyncio.to_thread(level_config_col.update_one,
+            {"guild_id": guild_id},
+            {"$set": {"enabled": enabled}},
+            upsert=True
+        )
+
+async def get_user_xp(guild_id, user_id):
+    if user_xp_col is None:
+        return {"xp": 0, "level": 0}
+    doc = await asyncio.to_thread(user_xp_col.find_one, {"guild_id": guild_id, "user_id": user_id})
     if not doc:
         return {"xp": 0, "level": 0}
     return {"xp": doc.get("xp", 0), "level": doc.get("level", 0)}
 
-def set_user_xp(guild_id, user_id, xp, level):
-    user_xp_col.update_one(
-        {"guild_id": guild_id, "user_id": user_id},
-        {"$set": {"xp": xp, "level": level}},
-        upsert=True
-    )
+async def set_user_xp(guild_id, user_id, xp, level):
+    if user_xp_col is not None:
+        await asyncio.to_thread(user_xp_col.update_one,
+            {"guild_id": guild_id, "user_id": user_id},
+            {"$set": {"xp": xp, "level": level}},
+            upsert=True
+        )
 
-def get_max_level(guild_id):
-    config = get_level_config(guild_id)
+async def get_max_level(guild_id):
+    config = await get_level_config(guild_id)
     if not config:
         return 0
     level_roles = config.get("level_roles", {})
@@ -132,6 +136,13 @@ def get_max_level(guild_id):
             if lv > max_lv:
                 max_lv = lv
     return max_lv
+
+def get_required_xp(level):
+    XP_PER_LEVEL = {
+        1: 20, 2: 50, 3: 100, 4: 150, 5: 200,
+        6: 250, 7: 300, 8: 350, 9: 400, 10: 500
+    }
+    return XP_PER_LEVEL.get(level, 500)
 
 def get_level_up_embed(user, level, guild, roles_added=None):
     if level == 1:
@@ -190,11 +201,7 @@ def get_level_up_embed(user, level, guild, roles_added=None):
         desc = f"{user.mention} has reached **Level {level}**!"
         footer = "Keep going!"
 
-    embed = discord.Embed(
-        title=title,
-        description=desc,
-        color=color
-    )
+    embed = discord.Embed(title=title, description=desc, color=color)
     embed.set_thumbnail(url=user.display_avatar.url)
     if roles_added:
         role_mentions = " ".join([f"<@&{rid}>" for rid in roles_added])
@@ -243,7 +250,7 @@ class LevelConfigView(discord.ui.View):
             return
 
         selected_role_ids = [int(value) for value in interaction.data["values"]]
-        config = get_level_config(self.guild.id)
+        config = await get_level_config(self.guild.id)
         if config:
             level_roles = config.get("level_roles", {})
             enabled = config.get("enabled", True)
@@ -251,7 +258,7 @@ class LevelConfigView(discord.ui.View):
             level_roles = {}
             enabled = self.enabled
         level_roles[str(self.level)] = selected_role_ids
-        set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
+        await set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
 
         action = "updated" if self.is_update else "saved"
         embed = discord.Embed(
@@ -294,12 +301,11 @@ async def level_up_system(
         await interaction.response.send_message("I need the 'Manage Roles' permission to assign roles.", ephemeral=True)
         return
 
-    config = get_level_config(interaction.guild.id)
+    config = await get_level_config(interaction.guild.id)
 
-    # If enabled is provided, just update enabled status and return
     if enabled is not None:
         new_status = True if enabled.value == "True" else False
-        update_level_enabled(interaction.guild.id, new_status)
+        await update_level_enabled(interaction.guild.id, new_status)
         status_text = "enabled" if new_status else "disabled"
         embed = discord.Embed(
             title="✅ Level System Updated",
@@ -309,7 +315,6 @@ async def level_up_system(
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    # Check if config exists and has any roles (excluding "_channel")
     has_roles = False
     if config:
         level_roles = config.get("level_roles", {})
@@ -319,9 +324,7 @@ async def level_up_system(
                 break
 
     if config and has_roles:
-        # Existing config with roles set
         if update is not None and update.value == "True":
-            # Update mode: show dropdown to change roles for this level
             view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True, enabled=config.get("enabled", True))
             embed = discord.Embed(
                 title="🎛️ Level Role Update",
@@ -339,7 +342,6 @@ async def level_up_system(
             )
             return
 
-    # No config, or config exists but no roles set (incomplete setup) -> proceed to setup
     view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False, enabled=True)
     embed = discord.Embed(
         title="🎛️ Level Role Configuration",
@@ -360,7 +362,7 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    config = get_level_config(message.guild.id)
+    config = await get_level_config(message.guild.id)
     if not config or not config.get("enabled", True):
         await bot.process_commands(message)
         return
@@ -368,9 +370,9 @@ async def on_message(message):
     guild = message.guild
     user = message.author
 
-    data = get_user_xp(guild.id, user.id)
+    data = await get_user_xp(guild.id, user.id)
     current_level = data["level"]
-    max_lv = get_max_level(guild.id)
+    max_lv = await get_max_level(guild.id)
 
     if current_level >= max_lv and max_lv > 0:
         await bot.process_commands(message)
@@ -383,7 +385,7 @@ async def on_message(message):
     if next_level <= max_lv and current_xp >= get_required_xp(next_level):
         new_level = next_level
         current_xp = 0
-        set_user_xp(guild.id, user.id, current_xp, new_level)
+        await set_user_xp(guild.id, user.id, current_xp, new_level)
 
         level_roles = config.get("level_roles", {})
         roles_to_remove = []
@@ -432,13 +434,13 @@ async def on_message(message):
             pass
 
     else:
-        set_user_xp(guild.id, user.id, current_xp, current_level)
+        await set_user_xp(guild.id, user.id, current_xp, current_level)
 
     await bot.process_commands(message)
 
 @bot.command(name="level")
 async def level_command(ctx):
-    config = get_level_config(ctx.guild.id)
+    config = await get_level_config(ctx.guild.id)
     if not config or not config.get("enabled", True):
         embed = discord.Embed(
             title="❌ Level System Not Active",
@@ -451,10 +453,10 @@ async def level_command(ctx):
         await ctx.reply(embed=embed, mention_author=False)
         return
 
-    data = get_user_xp(ctx.guild.id, ctx.author.id)
+    data = await get_user_xp(ctx.guild.id, ctx.author.id)
     level = data["level"]
     xp = data["xp"]
-    max_lv = get_max_level(ctx.guild.id)
+    max_lv = await get_max_level(ctx.guild.id)
 
     if max_lv == 0:
         await ctx.reply("No levels configured yet.", mention_author=False)
@@ -491,8 +493,6 @@ async def level_command(ctx):
         embed.set_footer(text=f"{xp} XP until Level {next_level}")
         await ctx.reply(embed=embed, mention_author=False)
 
-# ========== ACTIVE CHECKER SYSTEM ==========
-
 active_checker_tasks = {}
 
 def parse_time_interval(time_str: str) -> int:
@@ -528,7 +528,6 @@ async def active_checker_loop(guild_id, channel_id, interval_seconds):
             embed.set_footer(text="Powered by MonLua Bot")
             msg = await channel.send(content="@everyone", embed=embed)
             await msg.add_reaction("✅")
-
             await asyncio.sleep(interval_seconds)
         except Exception as e:
             print(f"Active checker error: {e}")
@@ -552,7 +551,7 @@ async def active_checker(
         return
 
     guild_id = interaction.guild.id
-    existing = active_checker_col.find_one({"guild_id": guild_id})
+    existing = await asyncio.to_thread(active_checker_col.find_one, {"guild_id": guild_id})
 
     if existing:
         existing_channel_id = existing.get("channel_id")
@@ -569,7 +568,7 @@ async def active_checker(
                 active_checker_tasks[guild_id].cancel()
                 del active_checker_tasks[guild_id]
 
-    active_checker_col.update_one(
+    await asyncio.to_thread(active_checker_col.update_one,
         {"guild_id": guild_id},
         {"$set": {"channel_id": channel.id, "interval": interval}},
         upsert=True
@@ -585,8 +584,6 @@ async def active_checker(
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ========== TICKET SYSTEM ==========
-
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
         super().__init__(timeout=None)
@@ -601,12 +598,12 @@ class PersistentTicketPanel(discord.ui.View):
         self.add_item(button)
 
     async def open_ticket_callback(self, interaction: discord.Interaction):
-        panel = ticket_panels_col.find_one({"_id": ObjectId(self.panel_id)})
+        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(self.panel_id)})
         if not panel:
             await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
             return
 
-        existing = tickets_col.find_one({
+        existing = await asyncio.to_thread(tickets_col.find_one, {
             "guild_id": interaction.guild.id,
             "user_id": interaction.user.id,
             "closed": False
@@ -614,7 +611,10 @@ class PersistentTicketPanel(discord.ui.View):
         if existing:
             channel = interaction.guild.get_channel(existing["channel_id"])
             if channel is None:
-                tickets_col.update_one({"_id": existing["_id"]}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}})
+                await asyncio.to_thread(tickets_col.update_one,
+                    {"_id": existing["_id"]},
+                    {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}}
+                )
                 existing = None
             else:
                 await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
@@ -668,9 +668,12 @@ class PersistentTicketPanel(discord.ui.View):
             "created_at": datetime.utcnow(),
             "panel_id": self.panel_id
         }
-        result_ticket = tickets_col.insert_one(ticket_doc)
-        ticket_id = str(result_ticket.inserted_id)
-        tickets_col.update_one({"_id": result_ticket.inserted_id}, {"$set": {"ticket_id": ticket_id}})
+        result = await asyncio.to_thread(tickets_col.insert_one, ticket_doc)
+        ticket_id = str(result.inserted_id)
+        await asyncio.to_thread(tickets_col.update_one,
+            {"_id": result.inserted_id},
+            {"$set": {"ticket_id": ticket_id}}
+        )
 
         ticket_view = TicketView(ticket_id, panel)
         await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
@@ -716,12 +719,12 @@ class TicketView(discord.ui.View):
 
     async def claim_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        ticket = await asyncio.to_thread(tickets_col.find_one, {"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
             return
 
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(ticket["panel_id"])})
         if not panel:
             await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
             return
@@ -747,12 +750,14 @@ class TicketView(discord.ui.View):
             await interaction.response.send_message(f"❌ This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
             return
 
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"claimed_by": interaction.user.id}})
+        await asyncio.to_thread(tickets_col.update_one,
+            {"_id": ObjectId(ticket_id)},
+            {"$set": {"claimed_by": interaction.user.id}}
+        )
 
         channel = interaction.guild.get_channel(ticket["channel_id"])
         if channel:
             creator_mention = f"<@{ticket['user_id']}>"
-            
             embed_claim = discord.Embed(
                 title="🖐️ Ticket Claimed",
                 description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
@@ -803,12 +808,12 @@ class TicketView(discord.ui.View):
 
     async def close_callback(self, interaction: discord.Interaction):
         ticket_id = interaction.data["custom_id"].split(":")[1]
-        ticket = tickets_col.find_one({"_id": ObjectId(ticket_id)})
+        ticket = await asyncio.to_thread(tickets_col.find_one, {"_id": ObjectId(ticket_id)})
         if not ticket:
             await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
             return
 
-        panel = ticket_panels_col.find_one({"_id": ObjectId(ticket["panel_id"])})
+        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(ticket["panel_id"])})
         if not panel:
             await interaction.response.send_message("❌ Panel config not found.", ephemeral=True)
             return
@@ -834,7 +839,10 @@ class TicketView(discord.ui.View):
         if channel:
             await channel.delete(reason=f"Ticket closed by {interaction.user}")
 
-        tickets_col.update_one({"_id": ObjectId(ticket_id)}, {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}})
+        await asyncio.to_thread(tickets_col.update_one,
+            {"_id": ObjectId(ticket_id)},
+            {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": interaction.user.id}}
+        )
 
         try:
             creator = await bot.fetch_user(ticket["user_id"])
@@ -937,7 +945,7 @@ async def ticket_command(
         "label_color": label_color,
         "created_at": datetime.utcnow()
     }
-    result = ticket_panels_col.insert_one(panel_data)
+    result = await asyncio.to_thread(ticket_panels_col.insert_one, panel_data)
     panel_id = str(result.inserted_id)
 
     embed = discord.Embed(
@@ -951,8 +959,6 @@ async def ticket_command(
     await interaction.followup.send("✅ Successfully created a ticket panel", ephemeral=True)
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
-
-# ========== VERIFICATION SYSTEM ==========
 
 class VerifyView(discord.ui.View):
     def __init__(self, guild_id):
@@ -968,7 +974,7 @@ class VerifyView(discord.ui.View):
         self.add_item(button)
 
     async def verify_callback(self, interaction: discord.Interaction):
-        config = verification_config_col.find_one({"guild_id": interaction.guild.id})
+        config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": interaction.guild.id})
         if not config:
             await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
             return
@@ -1106,7 +1112,7 @@ async def verify_system(
         "channel_id": channel.id,
         "message_id": msg.id
     }
-    verification_config_col.update_one(
+    await asyncio.to_thread(verification_config_col.update_one,
         {"guild_id": guild.id},
         {"$set": config_data},
         upsert=True
@@ -1121,89 +1127,6 @@ async def verify_system(
         ephemeral=True
     )
 
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as: {bot.user}")
-    try:
-        await bot.tree.sync()
-        print("✅ Slash commands synced globally")
-    except Exception as e:
-        print(f"⚠️ Failed to sync slash commands: {e}")
-
-    panels = ticket_panels_col.find()
-    for panel in panels:
-        panel_id = str(panel["_id"])
-        button_style = discord.ButtonStyle.gray
-        color_map = {"gray": discord.ButtonStyle.gray, "blurple": discord.ButtonStyle.blurple, "green": discord.ButtonStyle.green, "red": discord.ButtonStyle.red}
-        if panel.get("label_color"):
-            button_style = color_map.get(panel["label_color"].lower(), discord.ButtonStyle.gray)
-        view = PersistentTicketPanel(
-            panel_id,
-            panel.get("label_button", "Open Ticket"),
-            panel.get("label_emoji", "🎟️"),
-            button_style
-        )
-        bot.add_view(view)
-
-    configs = verification_config_col.find()
-    for config in configs:
-        guild_id = config["guild_id"]
-        channel_id = config["channel_id"]
-        message_id = config["message_id"]
-        guild = bot.get_guild(guild_id)
-        if guild:
-            channel = guild.get_channel(channel_id)
-            if channel:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    new_embed = discord.Embed(
-                        title="🔐 Server Verification",
-                        description=(
-                            "Welcome to the server! We are glad to Have you here.\n\n"
-                            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
-                            "This helps us keep the server safe and secure."
-                        ),
-                        color=0x1e90ff
-                    )
-                    new_embed.set_footer(text="Verification System")
-                    view = VerifyView(guild_id)
-                    await msg.edit(embed=new_embed, view=view)
-                    bot.add_view(view, message_id=message_id)
-                except Exception as e:
-                    print(f"Failed to update verification message: {e}")
-
-    active_configs = active_checker_col.find()
-    for cfg in active_configs:
-        guild_id = cfg["guild_id"]
-        channel_id = cfg["channel_id"]
-        interval = cfg["interval"]
-        task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
-        active_checker_tasks[guild_id] = task
-
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level"))
-    if db is not None:
-        print(f"✅ Database Ready: {db.name}")
-
-def get_allowed_channel():
-    if settings_col is None:
-        return None
-    doc = settings_col.find_one({"key": "command_channel"})
-    if doc:
-        return doc.get("value")
-    return None
-
-def set_allowed_channel(channel_id):
-    if settings_col is not None:
-        settings_col.update_one(
-            {"key": "command_channel"},
-            {"$set": {"value": channel_id}},
-            upsert=True
-        )
-
-def clear_allowed_channel():
-    if settings_col is not None:
-        settings_col.delete_one({"key": "command_channel"})
-
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -1211,13 +1134,38 @@ async def global_channel_check(ctx):
     if ctx.guild is None:
         await ctx.send("⚠️ You are not allowed to use commands in DMs.")
         return False
-    allowed = get_allowed_channel()
+    allowed = await get_allowed_channel()
     if allowed is None:
         return True
     if ctx.channel.id == allowed:
         return True
     await ctx.send(f"⚠️ Commands are restricted to <#{allowed}>. Please use them there.")
     return False
+
+@bot.tree.command(name="channel_set", description="Set the channel where commands are allowed")
+@app_commands.describe(channel="The channel to allow commands in")
+@app_commands.default_permissions(administrator=True)
+async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
+    await set_allowed_channel(channel.id)
+    await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
+
+@bot.tree.command(name="channel_view", description="View the currently allowed channel")
+async def channel_view(interaction: discord.Interaction):
+    allowed = await get_allowed_channel()
+    if allowed is None:
+        await interaction.response.send_message("ℹ️ No channel restriction is set. Commands are allowed everywhere.", ephemeral=True)
+    else:
+        channel = bot.get_channel(allowed)
+        if channel:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to {channel.mention}.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
+
+@bot.tree.command(name="channel_clear", description="Remove the channel restriction")
+@app_commands.default_permissions(administrator=True)
+async def channel_clear(interaction: discord.Interaction):
+    await clear_allowed_channel()
+    await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
 
 @bot.tree.command(name="ping", description="Check bot latency")
 async def slash_ping(interaction: discord.Interaction):
@@ -1233,31 +1181,6 @@ async def slash_ping(interaction: discord.Interaction):
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     embed.set_footer(text=f"Requested by {interaction.user}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="channel_set", description="Set the channel where commands are allowed")
-@app_commands.describe(channel="The channel to allow commands in")
-@app_commands.default_permissions(administrator=True)
-async def channel_set(interaction: discord.Interaction, channel: discord.TextChannel):
-    set_allowed_channel(channel.id)
-    await interaction.response.send_message(f"✅ Commands are now restricted to {channel.mention}.", ephemeral=True)
-
-@bot.tree.command(name="channel_view", description="View the currently allowed channel")
-async def channel_view(interaction: discord.Interaction):
-    allowed = get_allowed_channel()
-    if allowed is None:
-        await interaction.response.send_message("ℹ️ No channel restriction is set. Commands are allowed everywhere.", ephemeral=True)
-    else:
-        channel = bot.get_channel(allowed)
-        if channel:
-            await interaction.response.send_message(f"ℹ️ Commands are restricted to {channel.mention}.", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"ℹ️ Commands are restricted to a channel I cannot find (ID: {allowed}).", ephemeral=True)
-
-@bot.tree.command(name="channel_clear", description="Remove the channel restriction")
-@app_commands.default_permissions(administrator=True)
-async def channel_clear(interaction: discord.Interaction):
-    clear_allowed_channel()
-    await interaction.response.send_message("✅ Channel restriction removed. Commands are now allowed everywhere.", ephemeral=True)
 
 @bot.command(name="ping")
 async def prefix_ping(ctx):
@@ -1809,8 +1732,8 @@ async def db_status(ctx):
 async def db_clear(ctx):
     await delete_cmds_only(ctx)
     if settings_col is not None and logs_col is not None:
-        settings_col.delete_many({})
-        logs_col.delete_many({})
+        await asyncio.to_thread(settings_col.delete_many, {})
+        await asyncio.to_thread(logs_col.delete_many, {})
     emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
     await ctx.reply(embed=emb, mention_author=True)
 
@@ -1900,7 +1823,7 @@ async def deobf_command(ctx, *, link=None):
             else:
                 await ctx.reply(embed=emb, mention_author=True)
             if logs_col is not None:
-                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
         success, result = deobfuscate_wearedevs(content)
@@ -1922,7 +1845,7 @@ async def deobf_command(ctx, *, link=None):
             else:
                 await ctx.reply(embed=emb, mention_author=True)
             if logs_col is not None:
-                logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
 
         timeout = 180 if len(content) > 500000 else 60
@@ -1951,7 +1874,7 @@ async def deobf_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            logs_col.insert_one({"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         try: await proc.delete()
         except: pass
@@ -1985,7 +1908,7 @@ async def fetch_command(ctx, *, link=None):
         if file: await ctx.reply(embed=emb, file=file, mention_author=True)
         else: await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            logs_col.insert_one({"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
+            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -2026,7 +1949,7 @@ async def env_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            logs_col.insert_one({"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
@@ -2073,10 +1996,73 @@ async def obfuscate_command(ctx, *, link=None):
         else:
             await ctx.reply(embed=emb, mention_author=True)
         if logs_col is not None:
-            logs_col.insert_one({"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as: {bot.user}")
+    try:
+        await bot.tree.sync()
+        print("✅ Slash commands synced globally")
+    except Exception as e:
+        print(f"⚠️ Failed to sync slash commands: {e}")
+
+    panels = await asyncio.to_thread(ticket_panels_col.find)
+    for panel in panels:
+        panel_id = str(panel["_id"])
+        button_style = discord.ButtonStyle.gray
+        color_map = {"gray": discord.ButtonStyle.gray, "blurple": discord.ButtonStyle.blurple, "green": discord.ButtonStyle.green, "red": discord.ButtonStyle.red}
+        if panel.get("label_color"):
+            button_style = color_map.get(panel["label_color"].lower(), discord.ButtonStyle.gray)
+        view = PersistentTicketPanel(
+            panel_id,
+            panel.get("label_button", "Open Ticket"),
+            panel.get("label_emoji", "🎟️"),
+            button_style
+        )
+        bot.add_view(view)
+
+    configs = await asyncio.to_thread(verification_config_col.find)
+    for config in configs:
+        guild_id = config["guild_id"]
+        channel_id = config["channel_id"]
+        message_id = config["message_id"]
+        guild = bot.get_guild(guild_id)
+        if guild:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    new_embed = discord.Embed(
+                        title="🔐 Server Verification",
+                        description=(
+                            "Welcome to the server! We are glad to Have you here.\n\n"
+                            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
+                            "This helps us keep the server safe and secure."
+                        ),
+                        color=0x1e90ff
+                    )
+                    new_embed.set_footer(text="Verification System")
+                    view = VerifyView(guild_id)
+                    await msg.edit(embed=new_embed, view=view)
+                    bot.add_view(view, message_id=message_id)
+                except Exception as e:
+                    print(f"Failed to update verification message: {e}")
+
+    active_configs = await asyncio.to_thread(active_checker_col.find)
+    for cfg in active_configs:
+        guild_id = cfg["guild_id"]
+        channel_id = cfg["channel_id"]
+        interval = cfg["interval"]
+        task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
+        active_checker_tasks[guild_id] = task
+
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level"))
+    if db is not None:
+        print(f"✅ Database Ready: {db.name}")
 
 def keep_alive():
     while True:
