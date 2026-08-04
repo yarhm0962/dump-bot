@@ -522,16 +522,32 @@ async def active_checker(
         return
 
     guild_id = interaction.guild.id
+    existing = active_checker_col.find_one({"guild_id": guild_id})
+
+    if existing:
+        existing_channel_id = existing.get("channel_id")
+        existing_interval = existing.get("interval")
+        if existing_channel_id == channel.id and existing_interval == interval:
+            await interaction.response.send_message(
+                "❌ You already have an Active Checker set up with the same time and channel. "
+                "To change it, use a different time or channel.",
+                ephemeral=True
+            )
+            return
+        else:
+            # Cancel existing task if any
+            if guild_id in active_checker_tasks:
+                active_checker_tasks[guild_id].cancel()
+                del active_checker_tasks[guild_id]
+
+    # Update or insert config
     active_checker_col.update_one(
         {"guild_id": guild_id},
         {"$set": {"channel_id": channel.id, "interval": interval}},
         upsert=True
     )
 
-    if guild_id in active_checker_tasks:
-        active_checker_tasks[guild_id].cancel()
-        del active_checker_tasks[guild_id]
-
+    # Start new task
     task = asyncio.create_task(active_checker_loop(guild_id, channel.id, interval))
     active_checker_tasks[guild_id] = task
 
@@ -1129,6 +1145,7 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
+    # Reload active checkers
     active_configs = active_checker_col.find()
     for cfg in active_configs:
         guild_id = cfg["guild_id"]
