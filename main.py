@@ -111,7 +111,7 @@ def set_user_xp(guild_id, user_id, xp, level):
         upsert=True
     )
 
-def get_level_up_embed(user, level, guild):
+def get_level_up_embed(user, level, guild, roles_added=None):
     if level == 1:
         color = 0x1e90ff
         title = "🌟 Level Up!"
@@ -174,6 +174,9 @@ def get_level_up_embed(user, level, guild):
         color=color
     )
     embed.set_thumbnail(url=user.display_avatar.url)
+    if roles_added:
+        role_mentions = " ".join([f"<@&{rid}>" for rid in roles_added])
+        embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
     embed.set_footer(text=footer)
     return embed
 
@@ -201,7 +204,7 @@ class LevelConfigView(discord.ui.View):
             ))
 
         select = discord.ui.Select(
-            placeholder="Select roles to assign at this level",
+            placeholder=f"Select exactly {level} role(s) for Level {level}. Previous level roles will be removed on level up.",
             min_values=level,
             max_values=level,
             options=options,
@@ -264,7 +267,7 @@ async def level_up_system(
 
     embed = discord.Embed(
         title="🎛️ Level Role Configuration",
-        description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.",
+        description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
         color=0x1e90ff
     )
     embed.set_footer(text="You have 2 minutes to choose.")
@@ -300,22 +303,40 @@ async def on_message(message):
         config = get_level_config(guild.id)
         if config:
             level_roles = config.get("level_roles", {})
-            role_ids = level_roles.get(str(new_level), [])
-            if role_ids:
-                roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
-                if roles_to_add:
-                    try:
-                        await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
-                    except discord.Forbidden:
-                        pass
+            # Remove roles from previous levels (1 to new_level-1)
+            roles_to_remove = []
+            for lv in range(1, new_level):
+                role_ids = level_roles.get(str(lv), [])
+                for rid in role_ids:
+                    role = guild.get_role(rid)
+                    if role and role in user.roles:
+                        roles_to_remove.append(role)
+            if roles_to_remove:
+                try:
+                    await user.remove_roles(*roles_to_remove, reason=f"Leveled up to Level {new_level}")
+                except discord.Forbidden:
+                    pass
 
+            # Add roles for new level
+            role_ids = level_roles.get(str(new_level), [])
+            roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
+            if roles_to_add:
+                try:
+                    await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
+                except discord.Forbidden:
+                    pass
+            else:
+                roles_to_add = []
+
+            # Announce in configured channel
             channel_id = config.get("channel_id")
             if channel_id:
                 channel = guild.get_channel(channel_id)
                 if channel:
-                    embed = get_level_up_embed(user, new_level, guild)
+                    embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
                     await channel.send(content=user.mention, embed=embed)
 
+            # DM user
             try:
                 dm_embed = discord.Embed(
                     title=f"🌟 Level Up in {guild.name}!",
@@ -323,6 +344,9 @@ async def on_message(message):
                     color=0x1e90ff
                 )
                 dm_embed.set_thumbnail(url=user.display_avatar.url)
+                if roles_to_add:
+                    role_mentions = " ".join([r.mention for r in roles_to_add])
+                    dm_embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
                 dm_embed.set_footer(text="Keep chatting to level up further!")
                 await user.send(embed=dm_embed)
             except:
@@ -332,6 +356,45 @@ async def on_message(message):
         set_user_xp(guild.id, user.id, current_xp, current_level)
 
     await bot.process_commands(message)
+
+@bot.command(name="level")
+async def level_command(ctx):
+    """Check your current level and XP."""
+    data = get_user_xp(ctx.guild.id, ctx.author.id)
+    level = data["level"]
+    xp = data["xp"]
+    next_level = level + 1
+    if level >= 10:
+        embed = discord.Embed(
+            title="📊 Your Level Stats",
+            description=f"{ctx.author.mention}",
+            color=0x1e90ff
+        )
+        embed.add_field(name="Level", value=f"**{level}** (MAX)", inline=True)
+        embed.add_field(name="Total XP", value=f"**{xp}**", inline=True)
+        embed.add_field(name="Required XP", value="**MAX**", inline=True)
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        embed.set_footer(text="You've reached the maximum level!")
+        await ctx.reply(embed=embed, mention_author=False)
+    else:
+        required = get_required_xp(next_level)
+        progress = xp / required
+        bar_length = 10
+        filled = int(progress * bar_length)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        embed = discord.Embed(
+            title="📊 Your Level Stats",
+            description=f"{ctx.author.mention}",
+            color=0x1e90ff
+        )
+        embed.add_field(name="Level", value=f"**{level}**", inline=True)
+        embed.add_field(name="XP", value=f"**{xp}** / {required}", inline=True)
+        embed.add_field(name="Progress", value=f"`{bar}` {int(progress*100)}%", inline=False)
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        embed.set_footer(text=f"{xp} XP until Level {next_level}")
+        await ctx.reply(embed=embed, mention_author=False)
+
+# ========== TICKET SYSTEM ==========
 
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
@@ -698,6 +761,8 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
+# ========== VERIFICATION SYSTEM ==========
+
 class VerifyView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=None)
@@ -916,7 +981,7 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level-up-system"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level-up-system | .level"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
@@ -1591,6 +1656,11 @@ async def show_commands(ctx):
     emb.add_field(
         name="**Slash Commands**",
         value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level-up-system` - Configure level-up roles (admin only)",
+        inline=False
+    )
+    emb.add_field(
+        name="**Prefix Commands**",
+        value="`.level` - Check your current level and XP",
         inline=False
     )
     emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
