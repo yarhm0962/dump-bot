@@ -1181,14 +1181,13 @@ async def verify_system(
             except Exception as e:
                 print(f"Error adding role to {member}: {e}")
 
-    # 4. Create embed
+    # 4. Create embed with new formatting
     embed = discord.Embed(
-        title="Server Verification",
+        title="🔐 Server Verification",
         description=(
-            "Welcome to the server! We are glad to have you here.\n\n"
-            "To gain access to all the channels and features, please verify yourself by clicking the **Verify** button below.\n"
-            "This helps us keep the server safe and secure.\n\n"
-            "**Verification System**"
+            "Welcome to the server! We are glad to Have you here.\n\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the *VERIFY* button below.\n"
+            "This helps us keep the server safe and secure."
         ),
         color=0x1e90ff  # Light Blue
     )
@@ -1249,7 +1248,7 @@ async def on_ready():
         )
         bot.add_view(view)
 
-    # Load verification messages
+    # Load verification messages and update them with the new embed
     configs = verification_config_col.find()
     for config in configs:
         guild_id = config["guild_id"]
@@ -1261,11 +1260,32 @@ async def on_ready():
             if channel:
                 try:
                     msg = await channel.fetch_message(message_id)
-                    view = VerifyView(guild_id)
-                    await msg.edit(view=view)
-                    bot.add_view(view, message_id=message_id)
-                except:
-                    pass
+                    # Update embed to new format if it's not already
+                    if msg.embeds:
+                        embed = msg.embeds[0]
+                        # Check if title has lock emoji, if not, update
+                        if embed.title != "🔐 Server Verification":
+                            new_embed = discord.Embed(
+                                title="🔐 Server Verification",
+                                description=(
+                                    "Welcome to the server! We are glad to Have you here.\n\n"
+                                    "To gain access to all the channels and features, please verify yourself by clicking the *VERIFY* button below.\n"
+                                    "This helps us keep the server safe and secure."
+                                ),
+                                color=0x1e90ff
+                            )
+                            new_embed.set_footer(text="Verification System")
+                            # Preserve the view
+                            view = VerifyView(guild_id)
+                            await msg.edit(embed=new_embed, view=view)
+                            bot.add_view(view, message_id=message_id)
+                        else:
+                            # Just ensure view is attached
+                            view = VerifyView(guild_id)
+                            await msg.edit(view=view)
+                            bot.add_view(view, message_id=message_id)
+                except Exception as e:
+                    print(f"Failed to update verification message: {e}")
 
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system"))
     if db is not None:
