@@ -239,13 +239,14 @@ async def apply_roles_for_level(guild, level, old_role_ids, new_role_ids):
                 await asyncio.sleep(0.3)
 
 class LevelConfigView(discord.ui.View):
-    def __init__(self, guild, level, channel_id, is_update=False, enabled=True):
-        super().__init__(timeout=120)
+    def __init__(self, guild, level, channel_id, interaction, is_update=False, enabled=True):
+        super().__init__(timeout=60)
         self.guild = guild
         self.level = level
         self.channel_id = channel_id
         self.is_update = is_update
         self.enabled = enabled
+        self.interaction = interaction
 
         roles = [r for r in guild.roles if r.name != "@everyone"]
         roles.sort(key=lambda r: r.position, reverse=True)
@@ -302,6 +303,18 @@ class LevelConfigView(discord.ui.View):
         embed.set_footer(text="Roles have been applied to all users at this level.")
         await interaction.response.edit_message(embed=embed, view=None)
 
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.interaction.edit_original_response(view=self)
+            await self.interaction.followup.send(
+                "❌ Your command is Expired you need to use a `/level_up_system` command again.",
+                ephemeral=True
+            )
+        except:
+            pass
+
 @bot.tree.command(name="level_up_system", description="Configure the level-up system")
 @app_commands.describe(
     level="The level number (1-10) to configure",
@@ -357,13 +370,13 @@ async def level_up_system(
 
     if config and has_roles:
         if update is not None and update.value == "True":
-            view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True, enabled=config.get("enabled", True))
+            view = LevelConfigView(interaction.guild, level, select_channel.id, interaction, is_update=True, enabled=config.get("enabled", True))
             embed = discord.Embed(
                 title="🎛️ Level Role Update",
                 description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
                 color=0x1e90ff
             )
-            embed.set_footer(text="You have 2 minutes to choose.")
+            embed.set_footer(text="You have 1 minute to choose roles.")
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
         else:
@@ -374,13 +387,13 @@ async def level_up_system(
             )
             return
 
-    view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False, enabled=True)
+    view = LevelConfigView(interaction.guild, level, select_channel.id, interaction, is_update=False, enabled=True)
     embed = discord.Embed(
         title="🎛️ Level Role Configuration",
         description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
         color=0x1e90ff
     )
-    embed.set_footer(text="You have 2 minutes to choose.")
+    embed.set_footer(text="You have 1 minute to choose roles.")
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
