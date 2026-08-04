@@ -1186,7 +1186,7 @@ async def verify_system(
         title="🔐 Server Verification",
         description=(
             "Welcome to the server! We are glad to Have you here.\n\n"
-            "To gain access to all the channels and features, please verify yourself by clicking the *VERIFY* button below.\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
             "This helps us keep the server safe and secure."
         ),
         color=0x1e90ff  # Light Blue
