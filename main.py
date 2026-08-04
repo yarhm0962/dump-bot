@@ -203,12 +203,13 @@ def get_level_up_embed(user, level, guild, roles_added=None):
     return embed
 
 class LevelConfigView(discord.ui.View):
-    def __init__(self, guild, level, channel_id, is_update=False):
+    def __init__(self, guild, level, channel_id, is_update=False, enabled=True):
         super().__init__(timeout=120)
         self.guild = guild
         self.level = level
         self.channel_id = channel_id
         self.is_update = is_update
+        self.enabled = enabled
 
         roles = [r for r in guild.roles if r.name != "@everyone"]
         roles.sort(key=lambda r: r.position, reverse=True)
@@ -243,12 +244,12 @@ class LevelConfigView(discord.ui.View):
 
         selected_role_ids = [int(value) for value in interaction.data["values"]]
         config = get_level_config(self.guild.id)
-        if not config:
-            level_roles = {}
-            enabled = True
-        else:
+        if config:
             level_roles = config.get("level_roles", {})
             enabled = config.get("enabled", True)
+        else:
+            level_roles = {}
+            enabled = self.enabled
         level_roles[str(self.level)] = selected_role_ids
         set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
 
@@ -294,27 +295,34 @@ async def level_up_system(
         return
 
     config = get_level_config(interaction.guild.id)
-    if config:
-        # If enabled is provided, update enabled status and return
-        if enabled is not None:
-            new_status = True if enabled.value == "True" else False
-            update_level_enabled(interaction.guild.id, new_status)
-            status_text = "enabled" if new_status else "disabled"
-            embed = discord.Embed(
-                title="✅ Level System Updated",
-                description=f"The level system has been **{status_text}**.",
-                color=0x1e90ff
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
 
-        # If update is True, proceed to update roles for this level
+    # If enabled is provided, just update enabled status and return
+    if enabled is not None:
+        new_status = True if enabled.value == "True" else False
+        update_level_enabled(interaction.guild.id, new_status)
+        status_text = "enabled" if new_status else "disabled"
+        embed = discord.Embed(
+            title="✅ Level System Updated",
+            description=f"The level system has been **{status_text}**.",
+            color=0x1e90ff
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # Check if config exists and has any roles set (excluding "_channel")
+    has_roles = False
+    if config:
+        level_roles = config.get("level_roles", {})
+        for key in level_roles:
+            if key != "_channel":
+                has_roles = True
+                break
+
+    if config and has_roles:
+        # Existing config with roles set
         if update is not None and update.value == "True":
-            # Update channel in config
-            level_roles = config.get("level_roles", {})
-            set_level_config(interaction.guild.id, select_channel.id, level_roles, config.get("enabled", True))
-            # Show dropdown for role selection
-            view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True)
+            # Update mode: show dropdown to change roles for this level
+            view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=True, enabled=config.get("enabled", True))
             embed = discord.Embed(
                 title="🎛️ Level Role Update",
                 description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
@@ -323,29 +331,22 @@ async def level_up_system(
             embed.set_footer(text="You have 2 minutes to choose.")
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
+        else:
+            await interaction.response.send_message(
+                "❌ Your Level System is already set on this Server!\n"
+                "Use `/level_up_system` with `update: True` to modify existing configuration, or `enabled: True/False` to toggle the system.",
+                ephemeral=True
+            )
+            return
 
-        # Otherwise, error
-        await interaction.response.send_message(
-            "❌ Your Level System is already set on this Server!\n"
-            "Use `/level_up_system` with `update: True` to modify existing configuration, or `enabled: True/False` to toggle the system.",
-            ephemeral=True
-        )
-        return
-
-    # No config: initial setup
-    level_roles = {"_channel": select_channel.id}
-    enabled_status = True if enabled is None or enabled.value == "True" else False
-    set_level_config(interaction.guild.id, select_channel.id, level_roles, enabled_status)
-
-    view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False)
-
+    # No config, or config exists but no roles set (incomplete setup) -> proceed to setup
+    view = LevelConfigView(interaction.guild, level, select_channel.id, is_update=False, enabled=True)
     embed = discord.Embed(
         title="🎛️ Level Role Configuration",
         description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
         color=0x1e90ff
     )
     embed.set_footer(text="You have 2 minutes to choose.")
-
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
@@ -509,6 +510,8 @@ def parse_time_interval(time_str: str) -> int:
 
 async def active_checker_loop(guild_id, channel_id, interval_seconds):
     await bot.wait_until_ready()
+    # Sleep first to avoid immediate ping on restart
+    await asyncio.sleep(interval_seconds)
     while not bot.is_closed():
         try:
             guild = bot.get_guild(guild_id)
