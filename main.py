@@ -1201,13 +1201,21 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
     try:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
-        encoded_param = query.get('d', [None])[0]
+        # Try 'r' first (like the script), then fallback to 'd'
+        encoded_param = query.get('r', [None])[0] or query.get('d', [None])[0]
         if not encoded_param:
-            return False, None, "Missing 'd' parameter in URL."
+            return False, None, "Missing 'r' or 'd' parameter in URL."
+        # Try standard base64 first, then URL-safe
+        decoded_data = None
         try:
-            decoded_data = decode_base64_urlsafe(encoded_param)
-        except Exception as e:
-            return False, None, f"Invalid base64 encoding in 'd' parameter: {str(e)}"
+            decoded_data = base64.b64decode(encoded_param).decode('utf-8', errors='ignore')
+        except Exception:
+            pass
+        if not decoded_data or not decoded_data.startswith('http'):
+            try:
+                decoded_data = decode_base64_urlsafe(encoded_param)
+            except Exception as e:
+                return False, None, f"Failed to decode parameter: {str(e)}"
 
         if not decoded_data.startswith('http'):
             return False, None, "Decoded data is not a valid URL."
@@ -1246,11 +1254,11 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
         return False, None, f"Error during bypass: {str(e)}"
 
 @bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
-@app_commands.describe(url="The Delta Executor URL to bypass (must start with https://auth.platorelay.com/a?d=)")
+@app_commands.describe(url="The Delta Executor URL to bypass (must start with https://auth.platorelay.com/a?d= or ?r=)")
 async def slash_bypass(interaction: discord.Interaction, url: str):
-    if not url.startswith("https://auth.platorelay.com/a?d="):
+    if not (url.startswith("https://auth.platorelay.com/a?d=") or url.startswith("https://auth.platorelay.com/a?r=")):
         await interaction.response.send_message(
-            "❌ Invalid URL. Only 'https://auth.platorelay.com/a?d=...' links are allowed.",
+            "❌ Invalid URL. Only 'https://auth.platorelay.com/a?d=...' or '?r=...' links are allowed.",
             ephemeral=True
         )
         return
