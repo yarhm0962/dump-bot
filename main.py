@@ -822,7 +822,7 @@ class TicketView(discord.ui.View):
             creator_mention = f"<@{ticket['user_id']}>"
             embed_claim = discord.Embed(
                 title="🖐️ Ticket Claimed",
-                description=f"{interaction.user.mention} has claimed this ticket. {creator_mention}",
+                description=f"{interaction.user.mention} Has been claimed your ticket.",
                 color=discord.Color.green()
             )
             await channel.send(content=interaction.user.mention, embed=embed_claim)
@@ -1189,6 +1189,14 @@ async def verify_system(
         ephemeral=True
     )
 
+def decode_base64_urlsafe(data: str) -> str:
+    data = data.strip()
+    data = data.replace('-', '+').replace('_', '/')
+    padding = 4 - (len(data) % 4)
+    if padding != 4:
+        data += '=' * padding
+    return base64.b64decode(data).decode('utf-8', errors='ignore')
+
 async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
     try:
         parsed = urlparse(url)
@@ -1197,9 +1205,9 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
         if not encoded_param:
             return False, None, "Missing 'd' parameter in URL."
         try:
-            decoded_data = base64.b64decode(encoded_param).decode('utf-8', errors='ignore')
-        except Exception:
-            return False, None, "Invalid base64 encoding in 'd' parameter."
+            decoded_data = decode_base64_urlsafe(encoded_param)
+        except Exception as e:
+            return False, None, f"Invalid base64 encoding in 'd' parameter: {str(e)}"
 
         if not decoded_data.startswith('http'):
             return False, None, "Decoded data is not a valid URL."
