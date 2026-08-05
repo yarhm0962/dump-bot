@@ -1189,6 +1189,155 @@ async def verify_system(
         ephemeral=True
     )
 
+async def full_bypass(url: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://delta-executor.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    visited = set()
+    current_url = url
+    full_content = ""
+    delta_key = None
+    is_delta_link = "platorelay" in url.lower() or "delta" in url.lower()
+    time_left = None
+
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=90)) as session:
+        try:
+            for step in range(35):
+                if current_url in visited:
+                    break
+                visited.add(current_url)
+                await asyncio.sleep(0.6 + (step * 0.15))
+
+                async with session.get(current_url, allow_redirects=False) as resp:
+                    if resp.status in {301,302,303,307,308}:
+                        loc = resp.headers.get("Location")
+                        if loc:
+                            if not loc.startswith("http"):
+                                base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+                                current_url = base + loc
+                            else:
+                                current_url = loc
+                            continue
+
+                    text = await resp.text()
+                    full_content += f"\n{text}"
+
+                    if is_delta_link:
+                        try:
+                            tm = re.search(r'(have|for) ([0-9]+ days?, )?([0-9]+ hours?( and )?([0-9]+ minutes?)?) left', text, re.I)
+                            if tm:
+                                time_left = tm.group(0)
+                        except:
+                            pass
+
+                    next_url = None
+                    patterns = [
+                        r'window\.location\.replace\s*\(\s*["\']([^"\']+)["\']',
+                        r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
+                        r'<meta[^>]+content=["\']\d+;url=([^"\'>]+)',
+                        r'<form[^>]+action=["\']([^"\']+)["\']',
+                        r'fetch\s*\(\s*["\']([^"\']+)["\']'
+                    ]
+                    for p in patterns:
+                        try:
+                            m = re.search(p, text, re.I)
+                            if m:
+                                next_url = m.group(1)
+                                break
+                        except:
+                            continue
+                    if next_url:
+                        if not next_url.startswith("http"):
+                            base = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+                            current_url = base + next_url
+                        else:
+                            current_url = next_url
+                        continue
+                    break
+
+            all_text = re.sub(r'<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<[^>]+>', '\n', full_content, flags=re.DOTALL)
+            all_text = re.sub(r'\s+', ' ', all_text).strip()
+
+            valid_key_patterns = [
+                r'FREE_[A-Za-z0-9_]{25,}',
+                r'PREMIUM_[A-Za-z0-9_]{25,}',
+                r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+                r'\b[A-F0-9a-f]{32}\b',
+                r'\b[A-F0-9a-f]{64}\b'
+            ]
+            bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid"]
+
+            for pat in valid_key_patterns:
+                matches = re.findall(pat, all_text)
+                for m in matches:
+                    if len(m) < 28:
+                        continue
+                    if any(bad in m.lower() for bad in bad_words):
+                        continue
+                    delta_key = m
+                    break
+                if delta_key:
+                    break
+
+            return {
+                "ok": True,
+                "final_url": current_url,
+                "is_delta_link": is_delta_link,
+                "time_remaining": time_left,
+                "delta_key": delta_key,
+                "clean_text": all_text[:800]
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+@bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
+@app_commands.describe(url="The Delta Executor URL to bypass")
+async def slash_bypass(interaction: discord.Interaction, url: str):
+    if not url.startswith("https://auth.platorelay.com/a?d="):
+        await interaction.response.send_message("❌ Invalid URL. Only 'https://auth.platorelay.com/a?d=...' links are allowed.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        result = await full_bypass(url)
+        if not result["ok"]:
+            embed = discord.Embed(
+                title="❌ Bypass Failed",
+                description=f"An error occurred:\n```{result.get('error', 'Unknown error')}```",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        delta_key = result.get("delta_key")
+        if not delta_key:
+            embed = discord.Embed(
+                title="❌ Bypass Failed",
+                description="No key found on the page.",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="<:checkmark2:1446118933425033259> Bypass Successful",
+            description=f"🔑 Key retrieved — copy it and paste it into the application.\n\n```\n{delta_key}\n```",
+            color=0x2ecc71
+        )
+        embed.set_footer(text=f"Request by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error",
+            description=f"An unexpected error occurred:\n```{str(e)}```",
+            color=0xe74c3c
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -1839,7 +1988,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass Delta Executor URL and extract key",
         inline=False
     )
     emb.add_field(
@@ -2125,7 +2274,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | .level/.lvl"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | .level/.lvl"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
