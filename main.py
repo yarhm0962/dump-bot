@@ -1197,28 +1197,60 @@ def decode_base64_urlsafe(data: str) -> str:
         data += '=' * padding
     return base64.b64decode(data).decode('utf-8', errors='ignore')
 
+def extract_possible_keys(text: str) -> list:
+    patterns = [
+        r'FREE_[A-Za-z0-9_]{25,}',
+        r'PREMIUM_[A-Za-z0-9_]{25,}',
+        r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+        r'\b[A-F0-9a-f]{32}\b',
+        r'\b[A-F0-9a-f]{64}\b'
+    ]
+    bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid", "var", "function", "document"]
+    keys = []
+    for pat in patterns:
+        matches = re.findall(pat, text)
+        for m in matches:
+            if len(m) < 28:
+                continue
+            if any(bad in m.lower() for bad in bad_words):
+                continue
+            keys.append(m)
+    return keys
+
 async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
     try:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
-        # Try 'r' first (like the script), then fallback to 'd'
-        encoded_param = query.get('r', [None])[0] or query.get('d', [None])[0]
-        if not encoded_param:
-            return False, None, "Missing 'r' or 'd' parameter in URL."
-        # Try standard base64 first, then URL-safe
-        decoded_data = None
-        try:
-            decoded_data = base64.b64decode(encoded_param).decode('utf-8', errors='ignore')
-        except Exception:
-            pass
-        if not decoded_data or not decoded_data.startswith('http'):
-            try:
-                decoded_data = decode_base64_urlsafe(encoded_param)
-            except Exception as e:
-                return False, None, f"Failed to decode parameter: {str(e)}"
+        # First, try to find a base64-encoded parameter that might contain a URL
+        param_names = ['d', 'r', 'token', 'key', 'data', 'url', 'u', 'redirect']
+        found_url = None
+        for name in param_names:
+            if name in query:
+                val = query[name][0]
+                # Try standard base64 decode
+                try:
+                    decoded = base64.b64decode(val).decode('utf-8', errors='ignore')
+                    if decoded.startswith('http'):
+                        found_url = decoded
+                        break
+                except:
+                    pass
+                # Try URL-safe base64
+                try:
+                    decoded = decode_base64_urlsafe(val)
+                    if decoded.startswith('http'):
+                        found_url = decoded
+                        break
+                except:
+                    pass
+                # Maybe the value itself is already a URL
+                if val.startswith('http'):
+                    found_url = val
+                    break
 
-        if not decoded_data.startswith('http'):
-            return False, None, "Decoded data is not a valid URL."
+        if not found_url:
+            # No parameter yielded a URL; try fetching the original URL directly
+            found_url = url
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             headers = {
@@ -1226,43 +1258,27 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             }
-            async with session.get(decoded_data, headers=headers, allow_redirects=True, max_redirects=10) as resp:
+            async with session.get(found_url, headers=headers, allow_redirects=True, max_redirects=10) as resp:
                 if resp.status != 200:
-                    return False, None, f"HTTP {resp.status} when fetching decoded URL."
+                    return False, None, f"HTTP {resp.status} when fetching URL."
                 text = await resp.text(encoding='utf-8', errors='replace')
 
-        key_patterns = [
-            r'FREE_[A-Za-z0-9_]{25,}',
-            r'PREMIUM_[A-Za-z0-9_]{25,}',
-            r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
-            r'\b[A-F0-9a-f]{32}\b',
-            r'\b[A-F0-9a-f]{64}\b'
-        ]
-        bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid", "var", "function", "document"]
+        keys = extract_possible_keys(text)
+        if keys:
+            return True, keys[0], None
 
-        for pat in key_patterns:
-            matches = re.findall(pat, text)
-            for m in matches:
-                if len(m) < 28:
-                    continue
-                if any(bad in m.lower() for bad in bad_words):
-                    continue
-                return True, m, None
+        # Also search in the URL itself
+        keys = extract_possible_keys(url)
+        if keys:
+            return True, keys[0], None
 
-        return False, None, "No key found in the page content."
+        return False, None, "No key found in the page content or URL."
     except Exception as e:
         return False, None, f"Error during bypass: {str(e)}"
 
 @bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
-@app_commands.describe(url="The Delta Executor URL to bypass (must start with https://auth.platorelay.com/a?d= or ?r=)")
+@app_commands.describe(url="The URL to bypass (any link)")
 async def slash_bypass(interaction: discord.Interaction, url: str):
-    if not (url.startswith("https://auth.platorelay.com/a?d=") or url.startswith("https://auth.platorelay.com/a?r=")):
-        await interaction.response.send_message(
-            "❌ Invalid URL. Only 'https://auth.platorelay.com/a?d=...' or '?r=...' links are allowed.",
-            ephemeral=True
-        )
-        return
-
     await interaction.response.defer()
     success, key, error = await bypass_delta_key(url)
 
@@ -1933,7 +1949,7 @@ async def show_commands(ctx):
     )
     emb.add_field(
         name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass Delta Executor URL and extract key",
+        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key",
         inline=False
     )
     emb.add_field(
