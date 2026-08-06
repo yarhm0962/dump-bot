@@ -13,6 +13,7 @@ key systems, obfuscation and deployment.
 
 
 ======================= 🚀 FEATURES =======================
+
 🛡️ PROTECTION:
 - ✅ Custom Anti-Tamper
 - ✅ Anti-Env Logging
@@ -62,4 +63,5 @@ schema.json           → 📊 Database Structure
 
 
 ======================== 📞 SUPPORT ========================
+
 Official Discord: 🔗 https://discord.gg/vt8gJ5gKTH
