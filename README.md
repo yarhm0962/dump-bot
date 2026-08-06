@@ -35,6 +35,7 @@ key systems, obfuscation and deployment.
 
 
 =================== 🔧 SETUP INSTRUCTIONS ===================
+
 📝 REQUIREMENTS:
 discord.py==2.4.0
 pymongo==4.6.0
@@ -49,6 +50,7 @@ SECRET_KEY = YOUR_SECRET
 
 
 ==================== ⚠️ IMPORTANT NOTICE ====================
+
 THIS PROJECT IS FOR EDUCATIONAL AND LEGITIMATE
 DEVELOPMENT PURPOSES ONLY. NOT INTENDED FOR MALICIOUS
 USE OR PLATFORM POLICY VIOLATION. USE AT YOUR OWN
@@ -56,6 +58,7 @@ RESPONSIBILITY.
 
 
 ====================== 📄 FILE INDEX =======================
+
 main.py               → 🤖 Main Bot File
 requirements.txt      → 📦 Dependencies
 index.html            → 🌐 Web Endpoint
