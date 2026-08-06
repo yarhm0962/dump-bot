@@ -1,4 +1,3 @@
-##################################################
 #                                                #
 #            🔒 60 MIRAGE / RBLXLUA 🔒           #
 #                                                #
@@ -6,7 +5,6 @@
 #                                                #
 #   ✨ POWERED BY CUSTOM ANTI-TAMPER & PROTECTION ✨  #
 #                                                #
-##################################################
 
 
 ==================== 📋 PROJECT OVERVIEW ====================
@@ -64,4 +62,4 @@ schema.json           → 📊 Database Structure
 
 
 ======================== 📞 SUPPORT ========================
-Official Discord: 🔗 Put Your Server Link Here
+Official Discord: 🔗 https://discord.gg/vt8gJ5gKTH
