@@ -26,6 +26,11 @@ import tempfile
 from urllib.parse import urlparse, parse_qs
 from bson import ObjectId
 from datetime import datetime, timedelta
+import marshal
+import codecs
+import zlib
+import gzip
+import bz2
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -1517,356 +1522,310 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-PROMETHEUS_DEOBF_LUA = r"""
-local function DeobfuscatePrometheus(source)
-    local load = loadstring or load
-    local encoded = source:match("return%(function%(%.-%)local L={(.-)}")
-    if not encoded then return nil, "Not valid Prometheus format" end
-    local parts = {}
-    for s in encoded:gmatch('"(.-)"') do table.insert(parts, s) end
-    local function b64dec(data)
-        local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-        data = data:gsub('[^'..b..'=]', '')
-        return (data:gsub('.', function(x)
-            if x == '=' then return '' end
-            local r,f='',(b:find(x)-1)
-            for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
-            return r
-        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-            if #x ~= 8 then return '' end
-            local c=0
-            for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
-            return string.char(c)
-        end))
-    end
-    local output = {}
-    for _,chunk in ipairs(parts) do
-        local ok, res = pcall(b64dec, chunk)
-        if ok and res then table.insert(output, res) end
-    end
-    local raw = table.concat(output)
-    local clean = raw:gsub('%z', ''):gsub('%c+', '\n')
-    return clean
-end
+# ========== NEW AUTO DEOBFUSCATOR ==========
+class AutoDeobfuscator:
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
+        self.layer_count = 0
+        self.max_layers = 100
 
-local file = io.open(arg[1], "r")
-if not file then print("ERROR: Cannot read input file") os.exit(1) end
-local source = file:read("*a")
-file:close()
-
-local result, err = DeobfuscatePrometheus(source)
-if not result then
-    print("ERROR: " .. err)
-    os.exit(1)
-end
-
-local out = io.open(arg[2], "w")
-if not out then print("ERROR: Cannot write output") os.exit(1) end
-out:write(result)
-out:close()
-print("SUCCESS")
-"""
-
-async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
-
-def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
-    try:
-        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
-        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    data = data:gsub('[^'..b..'=]', '')
-    return (data:gsub('.', function(x)
-        if x == '=' then return '' end
-        local r,f='',(b:find(x)-1)
-        for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
-        return r
-    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-        if #x ~= 8 then return '' end
-        local c=0
-        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
-        return string.char(c)
-    end))
-end
-local raw = b64dec(L)
-local fn = loadstring and loadstring(raw) or load(raw)
-if fn then fn() else error("Failed to load obfuscated code") end
-end)(...)'''
-        return True, obfuscated
-    except Exception as e:
-        return False, str(e)
-
-def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
-    try:
-        patterns = [
-            r'loadstring\s*\(\s*["\']([A-Za-z0-9+/=]{20,})["\']\s*\)\s*\(?\s*\)?',
-            r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)',
-            r'local\s+_G\s*=\s*["\']([^"\']+)["\']',
-        ]
-        for pat in patterns:
-            m = re.search(pat, code)
-            if m:
-                encoded = m.group(1)
-                try:
-                    decoded = base64.b64decode(encoded).decode('utf-8', errors='replace')
-                    if len(decoded) > 10:
-                        return True, decoded
-                except:
-                    pass
-        return False, "No WeAreDevs pattern found"
-    except Exception as e:
-        return False, str(e)
-
-def deobfuscate_code(source_text):
-    max_depth = 8
-    report = {"detected": [], "steps": [], "anti": [], "snippets": []}
-
-    def scan_signatures(txt):
-        sigs = [
-            ("Prometheus", r'return\(function\(%.-%\)local L={'),
-            ("Lunr", r'return\(function\(L,M,I\)'),
-            ("Luraph", r'--.*Luraph|luraph\.net'),
-            ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
-            ("WeAreDevs", r'wearedevs\.net|WAD_OBF|loadstring%s*%(%s*["\']%s*[A-Za-z0-9+/=]+%s*["\']'),
-            ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
-        ]
-        lines = txt.split('\n')
-        for name, pat in sigs:
+    def is_likely_python_code(self, data):
+        if isinstance(data, bytes):
             try:
-                if re.search(pat, txt, re.I):
-                    if name not in report["detected"]:
-                        report["detected"].append(name)
-                    if "Anti" in name:
-                        report["anti"].append(name)
-                    for i, line in enumerate(lines):
-                        if re.search(pat, line, re.I):
-                            start = max(0, i-1)
-                            end = min(len(lines), i+2)
-                            snippet = '\n'.join(lines[start:end])
-                            if snippet not in report["snippets"]:
-                                report["snippets"].append(snippet)
-                            if len(report["snippets"]) >= 10:
-                                break
-            except re.error:
-                pass
-
-    def clean_escapes(txt):
-        txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
-        txt = re.sub(r'\\([0-9]{1,3})', lambda m: chr(int(m.group(1))), txt)
-        txt = re.sub(r'\\(.)', r'\1', txt)
-        return txt.strip()
-
-    def decode_b64(txt):
-        found = re.findall(r'["\']([A-Za-z0-9+/=]{25,})["\']', txt)
-        for chunk in found:
-            try:
-                out = base64.b64decode(chunk).decode('utf-8', 'replace')
-                if len(out) > len(chunk) and out != txt:
-                    return True, out
+                data = data.decode('utf-8', errors='ignore')
             except:
-                pass
-        return False, ""
+                return False
+        python_indicators = [
+            'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ',
+            'try:', 'except:', 'print(', 'return ', '__name__', '__main__'
+        ]
+        obfuscation_indicators = [
+            'exec(', 'eval(', 'marshal.loads', 'base64.b64decode',
+            'base64.b32decode', 'base64.b85decode',
+            'zlib.decompress', 'gzip.decompress', 'bz2.decompress',
+            'compile(', 'bytes.fromhex', 'binascii.'
+        ]
+        data_str = str(data)
+        data_lower = data_str.lower()
+        for indicator in obfuscation_indicators:
+            if indicator.lower() in data_lower:
+                return False
+        indicator_count = sum(1 for ind in python_indicators if ind in data_str)
+        return indicator_count >= 3
 
-    def decode_strchar(txt):
-        m = re.search(r'string\.char\(([\d,\s]+)\)', txt, re.DOTALL)
-        if not m: return False, ""
+    def try_decode_base64(self, data):
         try:
-            nums = [int(n) for n in re.findall(r'\d+', m.group(1)) if n.isdigit()]
-            out = ''.join(chr(n) for n in nums)
-            if len(out) > 30 and out != txt:
-                return True, out
+            if isinstance(data, str):
+                data = data.encode()
+            elif isinstance(data, memoryview):
+                data = bytes(data)
+            if isinstance(data, (bytes, bytearray)):
+                data = data.strip()
+            decoded = base64.b64decode(data, validate=True)
+            if len(decoded) > 0:
+                return decoded
         except:
             pass
-        return False, ""
+        return None
 
-    def decode_xor(txt):
-        mk = re.search(r'local\s+_?k\s*=\s*(\d{1,3})', txt)
-        md = re.search(r'local\s+_?d\s*=\s*\{([^}]{120,})\}', txt, re.DOTALL)
-        if mk and md:
+    def try_decode_base32(self, data):
+        try:
+            if isinstance(data, str):
+                data = data.encode()
+            decoded = base64.b32decode(data)
+            if len(decoded) > 0:
+                return decoded
+        except:
+            pass
+        return None
+
+    def try_decode_base85(self, data):
+        try:
+            if isinstance(data, str):
+                data = data.encode()
+            decoded = base64.b85decode(data)
+            if len(decoded) > 0:
+                return decoded
+        except:
+            pass
+        return None
+
+    def try_decode_hex(self, data):
+        try:
+            if isinstance(data, (bytes, bytearray, memoryview)):
+                if isinstance(data, memoryview):
+                    data = bytes(data)
+                data = data.decode('utf-8', errors='ignore')
+            if isinstance(data, str):
+                data = data.strip().replace('0x', '').replace('\\x', '')
+                if all(c in '0123456789abcdefABCDEF' for c in data):
+                    decoded = bytes.fromhex(data)
+                    if len(decoded) > 0:
+                        return decoded
+        except:
+            pass
+        return None
+
+    def try_decompress_zlib(self, data):
+        try:
+            decompressed = zlib.decompress(data)
+            if len(decompressed) > 0:
+                return decompressed
+        except:
+            pass
+        return None
+
+    def try_decompress_gzip(self, data):
+        try:
+            decompressed = gzip.decompress(data)
+            if len(decompressed) > 0:
+                return decompressed
+        except:
+            pass
+        return None
+
+    def try_decompress_bz2(self, data):
+        try:
+            decompressed = bz2.decompress(data)
+            if len(decompressed) > 0:
+                return decompressed
+        except:
+            pass
+        return None
+
+    def try_unmarshal(self, data):
+        try:
+            code_obj = marshal.loads(data)
+            if hasattr(code_obj, 'co_consts'):
+                for const in code_obj.co_consts:
+                    if isinstance(const, bytes) and len(const) > 100:
+                        return const
+            reconstructed = self.reconstruct_from_bytecode(code_obj)
+            if reconstructed:
+                return reconstructed.encode('utf-8')
+            return None
+        except:
+            pass
+        return None
+
+    def reconstruct_from_bytecode(self, code_obj):
+        try:
+            if not hasattr(code_obj, 'co_consts') or not hasattr(code_obj, 'co_names'):
+                return None
+            imports = []
+            names = code_obj.co_names
+            consts = code_obj.co_consts
+            if 'requests' in names or 'urllib' in names:
+                imports.append('import requests')
+            if 'os' in names:
+                imports.append('import os')
+            if 'sys' in names:
+                imports.append('import sys')
+            if 'marshal' in names:
+                imports.append('import marshal')
+            if 'base64' in names:
+                imports.append('import base64')
+            if 'zlib' in names:
+                imports.append('import zlib')
+            source_lines = []
+            source_lines.append('# Reconstructed source code from Python bytecode')
+            source_lines.append('# Deobfuscated by Auto Deobfuscator\n')
+            if imports:
+                source_lines.extend(imports)
+                source_lines.append('')
+            if 'system' in names and 'os' in names:
+                for const in consts:
+                    if isinstance(const, str) and ('http' in const or 'clear' in const or 'xdg-open' in const):
+                        source_lines.append(f"os.system('{const}')")
+            for const in consts:
+                if isinstance(const, str) and len(const) > 100 and '\n' in const:
+                    source_lines.append(f"\nlogo = '''{const}'''")
+                    if 'print' in names:
+                        source_lines.append('print(logo)\n')
+                    break
+            for const in consts:
+                if isinstance(const, str) and 'http' in const and len(const) > 20:
+                    source_lines.append(f"url = '{const}'")
+                    break
+            if 'input' in names:
+                for const in consts:
+                    if isinstance(const, str) and any(kw in const.lower() for kw in ['msisdn', 'phone', 'number', 'enter']):
+                        varname = [n for n in names if n not in ['input', 'print', 'os', 'sys']][0] if names else 'user_input'
+                        source_lines.append(f"{varname} = input('{const}')")
+                        break
+            if 'headers' in names or 'params' in names:
+                source_lines.append('\n# Headers and parameters')
+                source_lines.append('headers = {')
+                for const in consts:
+                    if isinstance(const, str) and 'X-KM' in const:
+                        idx = list(consts).index(const)
+                        if idx + 1 < len(consts) and isinstance(consts[idx + 1], str):
+                            source_lines.append(f"    '{const}': '{consts[idx + 1]}'")
+                source_lines.append('}')
+            if 'get' in names and 'requests' in imports:
+                source_lines.append('\n# Make API request')
+                source_lines.append('response = requests.get(url, headers=headers, params=params)')
+                source_lines.append('\nif response.status_code == 200:')
+                source_lines.append('    data = response.json()')
+                for const in consts:
+                    if isinstance(const, str) and const in ['name', 'status', 'useld', 'user_type']:
+                        source_lines.append(f"    if '{const}' in data:")
+                        label = [c for c in consts if isinstance(c, str) and const.lower() in c.lower()]
+                        if label:
+                            source_lines.append(f"        print('{label[0]}', data['{const}'])")
+                source_lines.append('else:')
+                source_lines.append('    print(\'Error:\', response.status_code)')
+            result = '\n'.join(source_lines)
+            if len(source_lines) > 5:
+                return result
+            return None
+        except Exception as e:
+            if self.verbose:
+                print(f"Bytecode reconstruction failed: {e}")
+            return None
+
+    def try_rot13(self, data):
+        try:
+            decoded = codecs.decode(data, 'rot13')
+            if decoded != data and self.is_likely_python_code(decoded):
+                return decoded
+        except:
+            pass
+        return None
+
+    def extract_from_exec(self, code):
+        patterns = [
+            r"exec\s*\(\s*marshal\.loads\s*\(\s*(b['\"].*?['\"])\s*\)",
+            r"exec\s*\(\s*base64\.b64decode\s*\(\s*(b['\"].*?['\"])\s*\)",
+            r"exec\s*\(\s*zlib\.decompress\s*\(\s*(b['\"].*?['\"])\s*\)",
+            r"exec\s*\(\s*(.+?)\s*\)",
+            r"eval\s*\(\s*(.+?)\s*\)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, code, re.DOTALL)
+            if match:
+                extracted = match.group(1)
+                try:
+                    if extracted.startswith('b'):
+                        return eval(extracted)
+                    return extracted
+                except:
+                    return extracted
+        return None
+
+    def decode_layer(self, data):
+        if isinstance(data, str):
+            extracted = self.extract_from_exec(data)
+            if extracted and extracted != data:
+                return extracted, "exec_extraction"
+            rot13_result = self.try_rot13(data)
+            if rot13_result:
+                return rot13_result, "rot13"
             try:
-                key = int(mk.group(1))
-                nums = [int(n) for n in re.findall(r'\d+', md.group(1)) if n.isdigit()]
-                out = ''.join(chr(b ^ key) for b in nums)
-                if len(out) > 30 and out != txt:
-                    return True, out
+                data_bytes = data.encode('utf-8')
             except:
-                pass
-        mx = re.search(r'["\']([^"\']{5,30})["\'].*?["\']([A-Za-z0-9+/=]{30,})["\']', txt, re.DOTALL)
-        if mx:
+                data_bytes = data.encode('latin-1')
+        else:
+            data_bytes = data
+
+        result = self.try_unmarshal(data_bytes)
+        if result:
+            return result, "marshal"
+        result = self.try_decompress_zlib(data_bytes)
+        if result:
+            return result, "zlib"
+        result = self.try_decompress_gzip(data_bytes)
+        if result:
+            return result, "gzip"
+        result = self.try_decompress_bz2(data_bytes)
+        if result:
+            return result, "bz2"
+        result = self.try_decode_base64(data_bytes)
+        if result:
+            return result, "base64"
+        result = self.try_decode_base32(data_bytes)
+        if result:
+            return result, "base32"
+        result = self.try_decode_base85(data_bytes)
+        if result:
+            return result, "base85"
+        result = self.try_decode_hex(data_bytes)
+        if result:
+            return result, "hex"
+        return None, "none"
+
+    def deobfuscate(self, input_data):
+        current_data = input_data
+        self.layer_count = 0
+        while self.layer_count < self.max_layers:
+            self.layer_count += 1
+            if self.is_likely_python_code(current_data):
+                break
+            decoded, method = self.decode_layer(current_data)
+            if decoded is None or method == "none":
+                break
+            if self.verbose:
+                size = len(decoded) if isinstance(decoded, (str, bytes)) else 0
+                print(f"Layer {self.layer_count}: Decoded using {method} → {size} bytes")
+            current_data = decoded
+        if isinstance(current_data, bytes):
             try:
-                k, d = mx.group(1), base64.b64decode(mx.group(2)).decode('latin1', 'replace')
-                out = ''.join(chr(ord(c) ^ ord(k[i % len(k)])) for i, c in enumerate(d))
-                if len(out) > 30 and out != txt:
-                    return True, out
+                current_data = current_data.decode('utf-8')
             except:
-                pass
-        return False, ""
+                try:
+                    current_data = current_data.decode('latin-1')
+                except:
+                    current_data = str(current_data)
+        if isinstance(current_data, (bytes, bytearray, memoryview)):
+            if isinstance(current_data, memoryview):
+                current_data = bytes(current_data)
+            try:
+                current_data = current_data.decode('utf-8', errors='ignore')
+            except:
+                current_data = str(current_data)
+        return str(current_data), self.layer_count
 
-    def extract_loadstring(txt):
-        m = re.search(r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)', txt)
-        if m:
-            return True, decode_all_escapes(m.group(1))
-        return False, ""
-
-    buf = clean_escapes(source_text)
-    scan_signatures(buf)
-    changed = True
-    depth = 0
-    while changed and depth < max_depth:
-        changed = False
-        depth += 1
-        ok, res = decode_b64(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: Base64 decoded")
-        ok, res = decode_strchar(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: string.char decoded")
-        ok, res = decode_xor(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: XOR decoded")
-        ok, res = extract_loadstring(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: loadstring extracted")
-        buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
-        buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
-        buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
-        buf = re.sub(r'--.*$', '', buf, re.MULTILINE)
-
-    buf = re.sub(r'\n\s*\n+', '\n', buf)
-    return {
-        "result": buf.strip(),
-        "layers_done": depth,
-        "detected": report["detected"],
-        "anti_found": report["anti"],
-        "steps": report["steps"],
-        "snippets": report["snippets"][:10],
-        "status": "Fully unpacked" if depth >= 3 else "Partially unpacked" if depth > 0 else "No unpack needed"
-    }
-
-class EnvBypassDumper:
-    def __init__(self):
-        self.removed_snippets = []
-
-    def remove_anti_env_checks(self, src):
-        patterns_remove = [
-            (r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end', '--[[G check removed]]'),
-            (r'if\s*_?ENV\s*[=!]=?\s*nil\s*then.*?end', '--[[ENV check removed]]'),
-            (r'if\s*getgenv\s*[=!]=?\s*nil\s*then.*?end', '--[[getgenv check removed]]'),
-            (r'if\s*type\s*\(\s*getgenv\s*\)\s*~=\s*["\']function["\'].*?end', '--[[type check removed]]'),
-            (r'_?\._?LOADED\s*[=!]=?\s*true.*?return', '--[[LOADED check removed]]'),
-            (r'_?\._?ENVLOG.*?Kick\(.*?\)', '--[[ENVLOG kick removed]]'),
-            (r'_?\._?GALACTIC.*?Kick\(.*?\)', '--[[GALACTIC kick removed]]'),
-            (r'_?\._?LOGGER.*?Kick\(.*?\)', '--[[LOGGER kick removed]]'),
-            (r'_?\._?UNOBF.*?Kick\(.*?\)', '--[[UNOBF kick removed]]'),
-            (r'_?\._?INTERCEPT.*?Kick\(.*?\)', '--[[INTERCEPT kick removed]]'),
-            (r'if\s*debug\s*~=\s*nil.*?then.*?error.*?end', '--[[debug error removed]]'),
-            (r'for\s+_+,\s+v\s+in\s+pairs\s*\(\s*debug\s*\)\s+do.*?end', '--[[debug pairs removed]]'),
-            (r'if\s*type\s*\(\s*rawget\s*\)\s*~=', '--[[rawget type check removed]]'),
-            (r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring', '--[[loadstring check removed]]'),
-            (r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil', '--[[_p/_j check removed]]'),
-            (r'local\s+_v_logDetect\s*=\s*function\(\)\s*_v_p\(_v_err,\s*"logging detected"\);\s*while\s+true\s+do\s+end;\s*end;', '--[[logDetect removed]]'),
-            (r'_v_logDetect\(\)', '--[[logDetect call removed]]'),
-            (r'if\s+not\s+_c_v\(_v_t\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_t check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_p\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_p check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_xp\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_xp check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_sm\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_sm check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_req\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_req check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_r\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_r check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_rs\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_rs check removed]]'),
-            (r'_v_tamperCheck\(\)', '--[[tamperCheck removed]]'),
-            (r'_proxy_active\s*=\s*true;?', '--[[proxy activation removed]]'),
-            (r'local\s+_s_set,\s*_setfenv\s*=\s*_v_p\(function\(\)\s*return\s*_v_g\["setfenv"\]\s*end\);?.*?end;?', '--[[setfenv spoof removed]]'),
-            (r'return\s+_self_ref;?', 'return _self_ref; --[[spoofed]]'),
-        ]
-        out = src
-        for pat, repl in patterns_remove:
-            matches = list(re.finditer(pat, out, re.DOTALL | re.IGNORECASE))
-            for m in matches:
-                snippet = out[m.start():m.end()]
-                if snippet not in self.removed_snippets:
-                    self.removed_snippets.append(snippet)
-            out = re.sub(pat, repl, out, flags=re.DOTALL | re.IGNORECASE)
-        return out
-
-    def patch_function_checks(self, src):
-        repl = [
-            (r'local\s+_l\s*=\s*loadstring.*?local\s+_l\s*=\s*loadstring', 'local _l = loadstring or load'),
-            (r'local\s+_g\s*=\s*game\.HttpGet', 'local _g = function() return "" end'),
-            (r'if\s+_l\s*~=\s*loadstring.*?then\s*__:Kick.*?end', '--[[loadstring kick removed]]'),
-            (r'if\s+_g\s*~=\s*game\.HttpGet.*?then\s*__:Kick.*?end', '--[[HttpGet kick removed]]')
-        ]
-        out = src
-        for old, new in repl:
-            out = re.sub(old, new, out, flags=re.DOTALL)
-        return out
-
-    def inject_dummy_returns(self, src):
-        block = [
-            "writefile", "readfile", "listfiles", "makefolder",
-            "delfile", "getfenv", "setfenv", "getgenv",
-            "debug.getupvalue", "debug.setupvalue", "debug.getlocal",
-            "debug.setlocal", "debug.getregistry", "hookfunction",
-            "rawset", "rawget", "rawequal", "newcclosure",
-            "loadstring", "load", "require"
-        ]
-        out = src
-        for name in block:
-            out = re.sub(
-                rf'if\s+type\s*\(\s*{name}\s*\)\s*[=!]=?\s*["\']?nil["\']?\s+then.*?(Kick|error|return).*?end',
-                f'--[[{name} check removed]]',
-                out, flags=re.DOTALL
-            )
-        return out
-
-    def full_bypass(self, code):
-        out = code
-        self.removed_snippets = []
-        out = self.remove_anti_env_checks(out)
-        out = self.patch_function_checks(out)
-        out = self.inject_dummy_returns(out)
-        out = re.sub(r'local\s+function\s+_v_logDetect\(\)[^;]*;', '--[[logDetect removed]]', out, flags=re.DOTALL)
-        return {
-            "patched_code": out.strip(),
-            "bypassed_count": len(self.removed_snippets)
-        }
+# ========== END NEW AUTO DEOBFUSCATOR ==========
 
 def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypass: dict=None):
     if env_bypass:
@@ -1957,33 +1916,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypa
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-@bot.group(name="db", invoke_without_command=True)
-async def db_group(ctx):
-    await delete_cmds_only(ctx)
-    emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
-    emb.add_field(name="`db status`", value="Check database connection", inline=False)
-    emb.add_field(name="`db clear`", value="Clear stored data", inline=False)
-    await ctx.reply(embed=emb, mention_author=True)
-
-@db_group.command(name="status")
-async def db_status(ctx):
-    await delete_cmds_only(ctx)
-    if db is not None:
-        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nConnected")
-    else:
-        emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot available")
-    await ctx.reply(embed=emb, mention_author=True)
-
-@db_group.command(name="clear")
-@commands.is_owner()
-async def db_clear(ctx):
-    await delete_cmds_only(ctx)
-    if settings_col is not None and logs_col is not None:
-        await asyncio.to_thread(settings_col.delete_many, {})
-        await asyncio.to_thread(logs_col.delete_many, {})
-    emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
-    await ctx.reply(embed=emb, mention_author=True)
-
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
@@ -2000,15 +1932,17 @@ async def deobf_command(ctx, *, link=None):
     proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
 
     try:
-        success, result = await deobfuscate_prometheus_lua(content)
-        if success:
+        deobfuscator = AutoDeobfuscator(verbose=False)
+        result, layers = deobfuscator.deobfuscate(content)
+
+        if result and len(result) > 10:
             report = {
-                "obfuscator": {"name": "Prometheus", "confidence": 100},
-                "steps": ["• Deobfuscated using Prometheus Lua function"],
-                "layers_reached": 1,
-                "max_layers": 1,
+                "obfuscator": {"name": "Auto Deobfuscator", "confidence": 100},
+                "steps": [f"• Decoded {layers} layer(s) using auto-detection"],
+                "layers_reached": layers,
+                "max_layers": 8,
                 "anti_found": [],
-                "status": "Fully unpacked",
+                "status": "Fully unpacked" if layers > 1 else "Raw source",
                 "result": result,
                 "snippets": []
             }
@@ -2019,58 +1953,83 @@ async def deobf_command(ctx, *, link=None):
             else:
                 await ctx.reply(embed=emb, mention_author=True)
             if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "AutoDeobfuscator", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
-
-        success, result = deobfuscate_wearedevs(content)
-        if success:
-            report = {
-                "obfuscator": {"name": "WeAreDevs", "confidence": 100},
-                "steps": ["• Deobfuscated using WeAreDevs pattern"],
-                "layers_reached": 1,
-                "max_layers": 1,
-                "anti_found": [],
-                "status": "Fully unpacked",
-                "result": result,
-                "snippets": []
-            }
-            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-            await proc.delete()
-            if file:
-                await ctx.reply(embed=emb, file=file, mention_author=True)
-            else:
-                await ctx.reply(embed=emb, mention_author=True)
-            if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-            return
-
-        timeout = 180 if len(content) > 500000 else 60
-        dec = await asyncio.wait_for(
-            asyncio.to_thread(deobfuscate_code, content),
-            timeout=timeout
-        )
-
-        obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
-        confidence = 100 if dec["detected"] else 100
-        max_layers = 8
-        report = {
-            "obfuscator": {"name": obfuscator_name, "confidence": confidence},
-            "steps": [f"• {s}" for s in dec["steps"]],
-            "layers_reached": dec["layers_done"],
-            "max_layers": max_layers,
-            "anti_found": [f"• {a}" for a in dec["anti_found"]],
-            "status": dec["status"],
-            "result": dec["result"],
-            "snippets": dec["snippets"]
-        }
-        emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-        await proc.delete()
-        if file:
-            await ctx.reply(embed=emb, file=file, mention_author=True)
         else:
-            await ctx.reply(embed=emb, mention_author=True)
-        if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+            # Fallback to older methods if auto-deobfuscator fails
+            await proc.edit(content=f"🔓 Auto-deobfuscator couldn't decode, trying fallback methods {ctx.author.mention}...")
+            success, result = await deobfuscate_prometheus_lua(content)
+            if success:
+                report = {
+                    "obfuscator": {"name": "Prometheus", "confidence": 100},
+                    "steps": ["• Deobfuscated using Prometheus Lua function"],
+                    "layers_reached": 1,
+                    "max_layers": 1,
+                    "anti_found": [],
+                    "status": "Fully unpacked",
+                    "result": result,
+                    "snippets": []
+                }
+                emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+                await proc.delete()
+                if file:
+                    await ctx.reply(embed=emb, file=file, mention_author=True)
+                else:
+                    await ctx.reply(embed=emb, mention_author=True)
+                if logs_col is not None:
+                    await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                return
+
+            success, result = deobfuscate_wearedevs(content)
+            if success:
+                report = {
+                    "obfuscator": {"name": "WeAreDevs", "confidence": 100},
+                    "steps": ["• Deobfuscated using WeAreDevs pattern"],
+                    "layers_reached": 1,
+                    "max_layers": 1,
+                    "anti_found": [],
+                    "status": "Fully unpacked",
+                    "result": result,
+                    "snippets": []
+                }
+                emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+                await proc.delete()
+                if file:
+                    await ctx.reply(embed=emb, file=file, mention_author=True)
+                else:
+                    await ctx.reply(embed=emb, mention_author=True)
+                if logs_col is not None:
+                    await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
+                return
+
+            # Last resort: fallback to the old enhanced deobfuscator
+            timeout = 180 if len(content) > 500000 else 60
+            dec = await asyncio.wait_for(
+                asyncio.to_thread(deobfuscate_code, content),
+                timeout=timeout
+            )
+
+            obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
+            confidence = 100 if dec["detected"] else 100
+            max_layers = 8
+            report = {
+                "obfuscator": {"name": obfuscator_name, "confidence": confidence},
+                "steps": [f"• {s}" for s in dec["steps"]],
+                "layers_reached": dec["layers_done"],
+                "max_layers": max_layers,
+                "anti_found": [f"• {a}" for a in dec["anti_found"]],
+                "status": dec["status"],
+                "result": dec["result"],
+                "snippets": dec["snippets"]
+            }
+            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
+            await proc.delete()
+            if file:
+                await ctx.reply(embed=emb, file=file, mention_author=True)
+            else:
+                await ctx.reply(embed=emb, mention_author=True)
+            if logs_col is not None:
+                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except asyncio.TimeoutError:
         try: await proc.delete()
         except: pass
