@@ -1221,13 +1221,11 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
     try:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
-        # First, try to find a base64-encoded parameter that might contain a URL
         param_names = ['d', 'r', 'token', 'key', 'data', 'url', 'u', 'redirect']
         found_url = None
         for name in param_names:
             if name in query:
                 val = query[name][0]
-                # Try standard base64 decode
                 try:
                     decoded = base64.b64decode(val).decode('utf-8', errors='ignore')
                     if decoded.startswith('http'):
@@ -1235,7 +1233,6 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
                         break
                 except:
                     pass
-                # Try URL-safe base64
                 try:
                     decoded = decode_base64_urlsafe(val)
                     if decoded.startswith('http'):
@@ -1243,13 +1240,11 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
                         break
                 except:
                     pass
-                # Maybe the value itself is already a URL
                 if val.startswith('http'):
                     found_url = val
                     break
 
         if not found_url:
-            # No parameter yielded a URL; try fetching the original URL directly
             found_url = url
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
@@ -1267,7 +1262,6 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
         if keys:
             return True, keys[0], None
 
-        # Also search in the URL itself
         keys = extract_possible_keys(url)
         if keys:
             return True, keys[0], None
@@ -1276,8 +1270,8 @@ async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
     except Exception as e:
         return False, None, f"Error during bypass: {str(e)}"
 
-@bot.tree.command(name="bypass", description="Bypass Delta Executor URL and extract key")
-@app_commands.describe(url="The URL to bypass (any link)")
+@bot.tree.command(name="bypass", description="Bypass any URL and extract key")
+@app_commands.describe(url="The URL to bypass")
 async def slash_bypass(interaction: discord.Interaction, url: str):
     await interaction.response.defer()
     success, key, error = await bypass_delta_key(url)
@@ -1372,6 +1366,87 @@ async def delete_cmds_only(ctx):
     if ctx.invoked_with in ["cmds"]:
         try: await ctx.message.delete()
         except: pass
+
+class CmdsPaginationView(discord.ui.View):
+    def __init__(self, pages, author_id):
+        super().__init__(timeout=120)
+        self.pages = pages
+        self.current_page = 0
+        self.author_id = author_id
+        self.total_pages = len(pages)
+
+    def get_embed(self):
+        page_data = self.pages[self.current_page]
+        embed = discord.Embed(
+            title=page_data["title"],
+            description=page_data["description"],
+            color=0x9b59b6
+        )
+        for field in page_data.get("fields", []):
+            embed.add_field(name=field["name"], value=field["value"], inline=field.get("inline", False))
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} • Owner can use commands anywhere. Channel restriction applies to others.")
+        return embed
+
+    @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, custom_id="cmds_back")
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("You are not the one who ran this command.", ephemeral=True)
+            return
+        if self.current_page == 0:
+            await interaction.response.send_message("You are already on the first page.", ephemeral=True)
+            return
+        self.current_page -= 1
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, custom_id="cmds_next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("You are not the one who ran this command.", ephemeral=True)
+            return
+        if self.current_page == self.total_pages - 1:
+            await interaction.response.send_message("You are already on the last page.", ephemeral=True)
+            return
+        self.current_page += 1
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
+
+@bot.command(name="cmds")
+async def show_commands(ctx):
+    await delete_cmds_only(ctx)
+    pages = [
+        {
+            "title": "RblXLua Tool Commands (1/2)",
+            "description": f"Hello {ctx.author.mention}",
+            "fields": [
+                {"name": "`Lua Deobf [.l]`", "value": "Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).", "inline": False},
+                {"name": "`Fetch Lua [.get]`", "value": "Fetch and decode raw source from URL or attachment.", "inline": False},
+                {"name": "`Env Logger [.env]`", "value": "Bypass anti-env checks and unpack the script.", "inline": False},
+                {"name": "`Obfuscate [.obf]`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
+            ]
+        },
+        {
+            "title": "RblXLua Tool Commands (2/2)",
+            "description": f"Hello {ctx.author.mention}",
+            "fields": [
+                {"name": "`Commands [.cmds]`", "value": "Show this help menu.", "inline": False},
+                {"name": "`Database [.db]`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
+                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key", "inline": False},
+                {"name": "**Prefix Commands**", "value": "`.level` / `.lvl` - Check your current level and XP", "inline": False},
+            ]
+        }
+    ]
+
+    view = CmdsPaginationView(pages, ctx.author.id)
+    embed = view.get_embed()
+    message = await ctx.send(embed=embed, view=view, mention_author=True)
+    view.message = message
 
 def decode_all_escapes(s: str) -> str:
     try:
@@ -1908,57 +1983,6 @@ async def db_clear(ctx):
         await asyncio.to_thread(logs_col.delete_many, {})
     emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
     await ctx.reply(embed=emb, mention_author=True)
-
-@bot.command(name="cmds")
-async def show_commands(ctx):
-    await delete_cmds_only(ctx)
-    emb = discord.Embed(
-        title="RblXLua Tool Commands",
-        color=0x9b59b6,
-        description=f"Hello {ctx.author.mention}"
-    )
-    emb.add_field(
-        name="`Lua Deobf [.l]`",
-        value="Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).",
-        inline=False
-    )
-    emb.add_field(
-        name="`Fetch Lua [.get]`",
-        value="Fetch and decode raw source from URL or attachment.",
-        inline=False
-    )
-    emb.add_field(
-        name="`Env Logger [.env]`",
-        value="Bypass anti-env checks and unpack the script.",
-        inline=False
-    )
-    emb.add_field(
-        name="`Obfuscate [.obf]`",
-        value="Obfuscate Lua code using Prometheus (single base64 chunk, stable).",
-        inline=False
-    )
-    emb.add_field(
-        name="`Commands [.cmds]`",
-        value="Show this help menu.",
-        inline=False
-    )
-    emb.add_field(
-        name="`Database [.db]`",
-        value="Database commands: `status`, `clear` (owner only).",
-        inline=False
-    )
-    emb.add_field(
-        name="**Slash Commands**",
-        value="`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key",
-        inline=False
-    )
-    emb.add_field(
-        name="**Prefix Commands**",
-        value="`.level` / `.lvl` - Check your current level and XP",
-        inline=False
-    )
-    emb.set_footer(text="Owner can use commands anywhere. Channel restriction applies to others.")
-    await ctx.send(embed=emb, mention_author=True)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
