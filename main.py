@@ -1430,7 +1430,7 @@ async def show_commands(ctx):
             "title": "RblXLua Tool Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Lua Deobf [.l]`", "value": "Deobfuscate Lua (Prometheus, WeAreDevs, then enhanced fallback).", "inline": False},
+                {"name": "`Lua Deobf [.l]`", "value": "Deobfuscate Lua (Auto, Prometheus, WeAreDevs, then enhanced fallback).", "inline": False},
                 {"name": "`Fetch Lua [.get]`", "value": "Fetch and decode raw source from URL or attachment.", "inline": False},
                 {"name": "`Env Logger [.env]`", "value": "Bypass anti-env checks and unpack the script.", "inline": False},
                 {"name": "`Obfuscate [.obf]`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
@@ -1452,6 +1452,8 @@ async def show_commands(ctx):
     embed = view.get_embed()
     message = await ctx.send(embed=embed, view=view, mention_author=True)
     view.message = message
+
+# ========== HELPER FUNCTIONS ==========
 
 def decode_all_escapes(s: str) -> str:
     try:
@@ -1522,7 +1524,446 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-# ========== NEW AUTO DEOBFUSCATOR ==========
+PROMETHEUS_DEOBF_LUA = r"""
+local function DeobfuscatePrometheus(source)
+    local load = loadstring or load
+    local encoded = source:match("return%(function%(%.-%)local L={(.-)}")
+    if not encoded then return nil, "Not valid Prometheus format" end
+    local parts = {}
+    for s in encoded:gmatch('"(.-)"') do table.insert(parts, s) end
+    local function b64dec(data)
+        local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        data = data:gsub('[^'..b..'=]', '')
+        return (data:gsub('.', function(x)
+            if x == '=' then return '' end
+            local r,f='',(b:find(x)-1)
+            for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
+            return r
+        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+            if #x ~= 8 then return '' end
+            local c=0
+            for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+            return string.char(c)
+        end))
+    end
+    local output = {}
+    for _,chunk in ipairs(parts) do
+        local ok, res = pcall(b64dec, chunk)
+        if ok and res then table.insert(output, res) end
+    end
+    local raw = table.concat(output)
+    local clean = raw:gsub('%z', ''):gsub('%c+', '\n')
+    return clean
+end
+
+local file = io.open(arg[1], "r")
+if not file then print("ERROR: Cannot read input file") os.exit(1) end
+local source = file:read("*a")
+file:close()
+
+local result, err = DeobfuscatePrometheus(source)
+if not result then
+    print("ERROR: " .. err)
+    os.exit(1)
+end
+
+local out = io.open(arg[2], "w")
+if not out then print("ERROR: Cannot write output") os.exit(1) end
+out:write(result)
+out:close()
+print("SUCCESS")
+"""
+
+async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(PROMETHEUS_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
+
+def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
+    try:
+        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    data = data:gsub('[^'..b..'=]', '')
+    return (data:gsub('.', function(x)
+        if x == '=' then return '' end
+        local r,f='',(b:find(x)-1)
+        for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
+        return r
+    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+        if #x ~= 8 then return '' end
+        local c=0
+        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+        return string.char(c)
+    end))
+end
+local raw = b64dec(L)
+local fn = loadstring and loadstring(raw) or load(raw)
+if fn then fn() else error("Failed to load obfuscated code") end
+end)(...)'''
+        return True, obfuscated
+    except Exception as e:
+        return False, str(e)
+
+def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
+    try:
+        patterns = [
+            r'loadstring\s*\(\s*["\']([A-Za-z0-9+/=]{20,})["\']\s*\)\s*\(?\s*\)?',
+            r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)',
+            r'local\s+_G\s*=\s*["\']([^"\']+)["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, code)
+            if m:
+                encoded = m.group(1)
+                try:
+                    decoded = base64.b64decode(encoded).decode('utf-8', errors='replace')
+                    if len(decoded) > 10:
+                        return True, decoded
+                except:
+                    pass
+        return False, "No WeAreDevs pattern found"
+    except Exception as e:
+        return False, str(e)
+
+def deobfuscate_code(source_text):
+    max_depth = 8
+    report = {"detected": [], "steps": [], "anti": [], "snippets": []}
+
+    def scan_signatures(txt):
+        sigs = [
+            ("Prometheus", r'return\(function\(%.-%\)local L={'),
+            ("Lunr", r'return\(function\(L,M,I\)'),
+            ("Luraph", r'--.*Luraph|luraph\.net'),
+            ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
+            ("WeAreDevs", r'wearedevs\.net|WAD_OBF|loadstring%s*%(%s*["\']%s*[A-Za-z0-9+/=]+%s*["\']'),
+            ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
+        ]
+        lines = txt.split('\n')
+        for name, pat in sigs:
+            try:
+                if re.search(pat, txt, re.I):
+                    if name not in report["detected"]:
+                        report["detected"].append(name)
+                    if "Anti" in name:
+                        report["anti"].append(name)
+                    for i, line in enumerate(lines):
+                        if re.search(pat, line, re.I):
+                            start = max(0, i-1)
+                            end = min(len(lines), i+2)
+                            snippet = '\n'.join(lines[start:end])
+                            if snippet not in report["snippets"]:
+                                report["snippets"].append(snippet)
+                            if len(report["snippets"]) >= 10:
+                                break
+            except re.error:
+                pass
+
+    def clean_escapes(txt):
+        txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
+        txt = re.sub(r'\\([0-9]{1,3})', lambda m: chr(int(m.group(1))), txt)
+        txt = re.sub(r'\\(.)', r'\1', txt)
+        return txt.strip()
+
+    def decode_b64(txt):
+        found = re.findall(r'["\']([A-Za-z0-9+/=]{25,})["\']', txt)
+        for chunk in found:
+            try:
+                out = base64.b64decode(chunk).decode('utf-8', 'replace')
+                if len(out) > len(chunk) and out != txt:
+                    return True, out
+            except:
+                pass
+        return False, ""
+
+    def decode_strchar(txt):
+        m = re.search(r'string\.char\(([\d,\s]+)\)', txt, re.DOTALL)
+        if not m: return False, ""
+        try:
+            nums = [int(n) for n in re.findall(r'\d+', m.group(1)) if n.isdigit()]
+            out = ''.join(chr(n) for n in nums)
+            if len(out) > 30 and out != txt:
+                return True, out
+        except:
+            pass
+        return False, ""
+
+    def decode_xor(txt):
+        mk = re.search(r'local\s+_?k\s*=\s*(\d{1,3})', txt)
+        md = re.search(r'local\s+_?d\s*=\s*\{([^}]{120,})\}', txt, re.DOTALL)
+        if mk and md:
+            try:
+                key = int(mk.group(1))
+                nums = [int(n) for n in re.findall(r'\d+', md.group(1)) if n.isdigit()]
+                out = ''.join(chr(b ^ key) for b in nums)
+                if len(out) > 30 and out != txt:
+                    return True, out
+            except:
+                pass
+        mx = re.search(r'["\']([^"\']{5,30})["\'].*?["\']([A-Za-z0-9+/=]{30,})["\']', txt, re.DOTALL)
+        if mx:
+            try:
+                k, d = mx.group(1), base64.b64decode(mx.group(2)).decode('latin1', 'replace')
+                out = ''.join(chr(ord(c) ^ ord(k[i % len(k)])) for i, c in enumerate(d))
+                if len(out) > 30 and out != txt:
+                    return True, out
+            except:
+                pass
+        return False, ""
+
+    def extract_loadstring(txt):
+        m = re.search(r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)', txt)
+        if m:
+            return True, decode_all_escapes(m.group(1))
+        return False, ""
+
+    buf = clean_escapes(source_text)
+    scan_signatures(buf)
+    changed = True
+    depth = 0
+    while changed and depth < max_depth:
+        changed = False
+        depth += 1
+        ok, res = decode_b64(buf)
+        if ok:
+            buf = res
+            changed = True
+            report["steps"].append(f"Layer {depth}: Base64 decoded")
+        ok, res = decode_strchar(buf)
+        if ok:
+            buf = res
+            changed = True
+            report["steps"].append(f"Layer {depth}: string.char decoded")
+        ok, res = decode_xor(buf)
+        if ok:
+            buf = res
+            changed = True
+            report["steps"].append(f"Layer {depth}: XOR decoded")
+        ok, res = extract_loadstring(buf)
+        if ok:
+            buf = res
+            changed = True
+            report["steps"].append(f"Layer {depth}: loadstring extracted")
+        buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
+        buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
+        buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
+        buf = re.sub(r'--.*$', '', buf, re.MULTILINE)
+
+    buf = re.sub(r'\n\s*\n+', '\n', buf)
+    return {
+        "result": buf.strip(),
+        "layers_done": depth,
+        "detected": report["detected"],
+        "anti_found": report["anti"],
+        "steps": report["steps"],
+        "snippets": report["snippets"][:10],
+        "status": "Fully unpacked" if depth >= 3 else "Partially unpacked" if depth > 0 else "No unpack needed"
+    }
+
+class EnvBypassDumper:
+    def __init__(self):
+        self.removed_snippets = []
+
+    def remove_anti_env_checks(self, src):
+        patterns_remove = [
+            (r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end', '--[[G check removed]]'),
+            (r'if\s*_?ENV\s*[=!]=?\s*nil\s*then.*?end', '--[[ENV check removed]]'),
+            (r'if\s*getgenv\s*[=!]=?\s*nil\s*then.*?end', '--[[getgenv check removed]]'),
+            (r'if\s*type\s*\(\s*getgenv\s*\)\s*~=\s*["\']function["\'].*?end', '--[[type check removed]]'),
+            (r'_?\._?LOADED\s*[=!]=?\s*true.*?return', '--[[LOADED check removed]]'),
+            (r'_?\._?ENVLOG.*?Kick\(.*?\)', '--[[ENVLOG kick removed]]'),
+            (r'_?\._?GALACTIC.*?Kick\(.*?\)', '--[[GALACTIC kick removed]]'),
+            (r'_?\._?LOGGER.*?Kick\(.*?\)', '--[[LOGGER kick removed]]'),
+            (r'_?\._?UNOBF.*?Kick\(.*?\)', '--[[UNOBF kick removed]]'),
+            (r'_?\._?INTERCEPT.*?Kick\(.*?\)', '--[[INTERCEPT kick removed]]'),
+            (r'if\s*debug\s*~=\s*nil.*?then.*?error.*?end', '--[[debug error removed]]'),
+            (r'for\s+_+,\s+v\s+in\s+pairs\s*\(\s*debug\s*\)\s+do.*?end', '--[[debug pairs removed]]'),
+            (r'if\s*type\s*\(\s*rawget\s*\)\s*~=', '--[[rawget type check removed]]'),
+            (r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring', '--[[loadstring check removed]]'),
+            (r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil', '--[[_p/_j check removed]]'),
+            (r'local\s+_v_logDetect\s*=\s*function\(\)\s*_v_p\(_v_err,\s*"logging detected"\);\s*while\s+true\s+do\s+end;\s*end;', '--[[logDetect removed]]'),
+            (r'_v_logDetect\(\)', '--[[logDetect call removed]]'),
+            (r'if\s+not\s+_c_v\(_v_t\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_t check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_p\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_p check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_xp\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_xp check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_sm\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_sm check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_req\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_req check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_r\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_r check removed]]'),
+            (r'if\s+not\s+_c_v\(_v_rs\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_rs check removed]]'),
+            (r'_v_tamperCheck\(\)', '--[[tamperCheck removed]]'),
+            (r'_proxy_active\s*=\s*true;?', '--[[proxy activation removed]]'),
+            (r'local\s+_s_set,\s*_setfenv\s*=\s*_v_p\(function\(\)\s*return\s*_v_g\["setfenv"\]\s*end\);?.*?end;?', '--[[setfenv spoof removed]]'),
+            (r'return\s+_self_ref;?', 'return _self_ref; --[[spoofed]]'),
+        ]
+        out = src
+        for pat, repl in patterns_remove:
+            matches = list(re.finditer(pat, out, re.DOTALL | re.IGNORECASE))
+            for m in matches:
+                snippet = out[m.start():m.end()]
+                if snippet not in self.removed_snippets:
+                    self.removed_snippets.append(snippet)
+            out = re.sub(pat, repl, out, flags=re.DOTALL | re.IGNORECASE)
+        return out
+
+    def patch_function_checks(self, src):
+        repl = [
+            (r'local\s+_l\s*=\s*loadstring.*?local\s+_l\s*=\s*loadstring', 'local _l = loadstring or load'),
+            (r'local\s+_g\s*=\s*game\.HttpGet', 'local _g = function() return "" end'),
+            (r'if\s+_l\s*~=\s*loadstring.*?then\s*__:Kick.*?end', '--[[loadstring kick removed]]'),
+            (r'if\s+_g\s*~=\s*game\.HttpGet.*?then\s*__:Kick.*?end', '--[[HttpGet kick removed]]')
+        ]
+        out = src
+        for old, new in repl:
+            out = re.sub(old, new, out, flags=re.DOTALL)
+        return out
+
+    def inject_dummy_returns(self, src):
+        block = [
+            "writefile", "readfile", "listfiles", "makefolder",
+            "delfile", "getfenv", "setfenv", "getgenv",
+            "debug.getupvalue", "debug.setupvalue", "debug.getlocal",
+            "debug.setlocal", "debug.getregistry", "hookfunction",
+            "rawset", "rawget", "rawequal", "newcclosure",
+            "loadstring", "load", "require"
+        ]
+        out = src
+        for name in block:
+            out = re.sub(
+                rf'if\s+type\s*\(\s*{name}\s*\)\s*[=!]=?\s*["\']?nil["\']?\s+then.*?(Kick|error|return).*?end',
+                f'--[[{name} check removed]]',
+                out, flags=re.DOTALL
+            )
+        return out
+
+    def full_bypass(self, code):
+        out = code
+        self.removed_snippets = []
+        out = self.remove_anti_env_checks(out)
+        out = self.patch_function_checks(out)
+        out = self.inject_dummy_returns(out)
+        out = re.sub(r'local\s+function\s+_v_logDetect\(\)[^;]*;', '--[[logDetect removed]]', out, flags=re.DOTALL)
+        return {
+            "patched_code": out.strip(),
+            "bypassed_count": len(self.removed_snippets)
+        }
+
+def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypass: dict=None):
+    if env_bypass:
+        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{env_bypass['bypassed_count']}`\n**Size:** `{round(len(env_bypass['patched_code'].encode('utf-8'))/1024, 2)} KB`\n\n**Protection Snippets:**\n```lua\n"
+        snippets = env_bypass.get("snippets", [])
+        if snippets:
+            snippet_text = ""
+            for i, snippet in enumerate(snippets[:3]):
+                snippet_text += f"-- Removed {i+1}:\n{snippet}\n\n"
+            if len(snippet_text) > 500:
+                snippet_text = snippet_text[:500] + "\n... [truncated]"
+            desc += snippet_text + "```"
+        else:
+            desc += "No specific protection snippets found.\n```"
+        content = env_bypass["patched_code"]
+    elif deobf:
+        obf = deobf["obfuscator"]
+        steps = "\n".join([f"• {s}" for s in deobf["steps"]]) if deobf["steps"] else "• No unpack steps"
+        anti = "\n".join(deobf["anti_found"]) if deobf["anti_found"] else "• None detected"
+        desc = f"""{ctx.author.mention}
+**Obfuscator:** `{obf['name']}`
+**Confidence:** `{obf['confidence']}%`
+**Status:** `{deobf['status']}`
+**Layers:** `{deobf['layers_reached']}/{deobf['max_layers']}`
+
+**Anti-Env / Anti-Tamper Found:**
+{anti}
+
+**Processing Steps:**
+{steps}
+"""
+        snippets = deobf.get("snippets", [])
+        if snippets:
+            desc += "\n**Protection Snippets:**\n```lua\n"
+            snippet_text = ""
+            for i, snippet in enumerate(snippets[:3]):
+                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
+            if len(snippet_text) > 500:
+                snippet_text = snippet_text[:500] + "\n... [truncated]"
+            desc += snippet_text + "```"
+        content = deobf["result"]
+    elif raw:
+        desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
+        content = decode_all_escapes(raw)
+    else:
+        emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Empty result")
+        return emb, None
+
+    if not content or len(content) < 5:
+        emb = discord.Embed(title=title, color=0xe74c3c, description=desc+"\n❌ No usable code")
+        return emb, None
+
+    size_b = content.encode('utf-8')
+    size_kb = len(size_b) / 1024
+    file = None
+    if env_bypass:
+        preview_len = int(len(content) * 0.3)
+        preview_len = min(preview_len, 500)
+        if preview_len < 50:
+            preview_len = min(150, len(content))
+        preview = content[:preview_len]
+        if len(content) > preview_len:
+            preview += "... [truncated]"
+        desc += f"\n\n**Patched Code Preview (30%):**\n```lua\n{preview}\n```"
+    elif deobf:
+        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
+            preview_len = int(len(content) * 0.3)
+            preview_len = min(preview_len, 500)
+            if preview_len < 50:
+                preview_len = min(150, len(content))
+            preview = content[:preview_len]
+            if len(content) > preview_len:
+                preview += "... [truncated]"
+            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
+    elif raw:
+        preview = content[:500] + ("..." if len(content) > 500 else "")
+        desc += f"\n\n**Raw Code Preview:**\n```lua\n{preview}\n```"
+
+    if size_kb > 10 or len(content) > 1800:
+        file = File(io.BytesIO(size_b), filename="processed.lua")
+        if len(desc) > 5000:
+            desc = desc[:5000] + "... [truncated description]"
+        if not desc.endswith("Full code sent as file"):
+            desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
+        emb = discord.Embed(title=title, color=0x3498db, description=desc)
+    else:
+        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
+    emb.set_footer(text=f"Requested by {ctx.author}")
+    return emb, file
+
 class AutoDeobfuscator:
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
@@ -1825,96 +2266,34 @@ class AutoDeobfuscator:
                 current_data = str(current_data)
         return str(current_data), self.layer_count
 
-# ========== END NEW AUTO DEOBFUSCATOR ==========
+# ========== COMMANDS ==========
 
-def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypass: dict=None):
-    if env_bypass:
-        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{env_bypass['bypassed_count']}`\n**Size:** `{round(len(env_bypass['patched_code'].encode('utf-8'))/1024, 2)} KB`\n\n**Protection Snippets:**\n```lua\n"
-        snippets = env_bypass.get("snippets", [])
-        if snippets:
-            snippet_text = ""
-            for i, snippet in enumerate(snippets[:3]):
-                snippet_text += f"-- Removed {i+1}:\n{snippet}\n\n"
-            if len(snippet_text) > 500:
-                snippet_text = snippet_text[:500] + "\n... [truncated]"
-            desc += snippet_text + "```"
-        else:
-            desc += "No specific protection snippets found.\n```"
-        content = env_bypass["patched_code"]
-    elif deobf:
-        obf = deobf["obfuscator"]
-        steps = "\n".join([f"• {s}" for s in deobf["steps"]]) if deobf["steps"] else "• No unpack steps"
-        anti = "\n".join(deobf["anti_found"]) if deobf["anti_found"] else "• None detected"
-        desc = f"""{ctx.author.mention}
-**Obfuscator:** `{obf['name']}`
-**Confidence:** `{obf['confidence']}%`
-**Status:** `{deobf['status']}`
-**Layers:** `{deobf['layers_reached']}/{deobf['max_layers']}`
+@bot.group(name="db", invoke_without_command=True)
+async def db_group(ctx):
+    await delete_cmds_only(ctx)
+    emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
+    emb.add_field(name="`db status`", value="Check database connection", inline=False)
+    emb.add_field(name="`db clear`", value="Clear stored data", inline=False)
+    await ctx.reply(embed=emb, mention_author=True)
 
-**Anti-Env / Anti-Tamper Found:**
-{anti}
-
-**Processing Steps:**
-{steps}
-"""
-        snippets = deobf.get("snippets", [])
-        if snippets:
-            desc += "\n**Protection Snippets:**\n```lua\n"
-            snippet_text = ""
-            for i, snippet in enumerate(snippets[:3]):
-                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
-            if len(snippet_text) > 500:
-                snippet_text = snippet_text[:500] + "\n... [truncated]"
-            desc += snippet_text + "```"
-        content = deobf["result"]
-    elif raw:
-        desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
-        content = decode_all_escapes(raw)
+@db_group.command(name="status")
+async def db_status(ctx):
+    await delete_cmds_only(ctx)
+    if db is not None:
+        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nConnected")
     else:
-        emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Empty result")
-        return emb, None
+        emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot available")
+    await ctx.reply(embed=emb, mention_author=True)
 
-    if not content or len(content) < 5:
-        emb = discord.Embed(title=title, color=0xe74c3c, description=desc+"\n❌ No usable code")
-        return emb, None
-
-    size_b = content.encode('utf-8')
-    size_kb = len(size_b) / 1024
-    file = None
-    if env_bypass:
-        preview_len = int(len(content) * 0.3)
-        preview_len = min(preview_len, 500)
-        if preview_len < 50:
-            preview_len = min(150, len(content))
-        preview = content[:preview_len]
-        if len(content) > preview_len:
-            preview += "... [truncated]"
-        desc += f"\n\n**Patched Code Preview (30%):**\n```lua\n{preview}\n```"
-    elif deobf:
-        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
-            preview_len = int(len(content) * 0.3)
-            preview_len = min(preview_len, 500)
-            if preview_len < 50:
-                preview_len = min(150, len(content))
-            preview = content[:preview_len]
-            if len(content) > preview_len:
-                preview += "... [truncated]"
-            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
-    elif raw:
-        preview = content[:500] + ("..." if len(content) > 500 else "")
-        desc += f"\n\n**Raw Code Preview:**\n```lua\n{preview}\n```"
-
-    if size_kb > 10 or len(content) > 1800:
-        file = File(io.BytesIO(size_b), filename="processed.lua")
-        if len(desc) > 5000:
-            desc = desc[:5000] + "... [truncated description]"
-        if not desc.endswith("Full code sent as file"):
-            desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
-        emb = discord.Embed(title=title, color=0x3498db, description=desc)
-    else:
-        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
-    emb.set_footer(text=f"Requested by {ctx.author}")
-    return emb, file
+@db_group.command(name="clear")
+@commands.is_owner()
+async def db_clear(ctx):
+    await delete_cmds_only(ctx)
+    if settings_col is not None and logs_col is not None:
+        await asyncio.to_thread(settings_col.delete_many, {})
+        await asyncio.to_thread(logs_col.delete_many, {})
+    emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
+    await ctx.reply(embed=emb, mention_author=True)
 
 @bot.command(name="l")
 async def deobf_command(ctx, *, link=None):
@@ -1956,7 +2335,6 @@ async def deobf_command(ctx, *, link=None):
                 await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "AutoDeobfuscator", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
             return
         else:
-            # Fallback to older methods if auto-deobfuscator fails
             await proc.edit(content=f"🔓 Auto-deobfuscator couldn't decode, trying fallback methods {ctx.author.mention}...")
             success, result = await deobfuscate_prometheus_lua(content)
             if success:
@@ -2002,7 +2380,6 @@ async def deobf_command(ctx, *, link=None):
                     await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
                 return
 
-            # Last resort: fallback to the old enhanced deobfuscator
             timeout = 180 if len(content) > 500000 else 60
             dec = await asyncio.wait_for(
                 asyncio.to_thread(deobfuscate_code, content),
