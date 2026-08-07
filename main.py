@@ -33,6 +33,7 @@ import gzip
 import bz2
 from pathlib import Path
 import shutil
+from typing import Union, Optional, Sequence, Callable
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
