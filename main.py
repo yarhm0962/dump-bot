@@ -57,6 +57,7 @@ verification_config_col = None
 level_config_col = None
 user_xp_col = None
 active_checker_col = None
+auto_delete_config_col = None  # new collection
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -70,6 +71,7 @@ try:
     level_config_col = db["level_config"]
     user_xp_col = db["user_xp"]
     active_checker_col = db["active_checker_config"]
+    auto_delete_config_col = db["auto_delete_config"]   # new collection
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -423,6 +425,16 @@ async def on_message(message):
         return
     if not message.guild:
         return
+
+    # Auto‑delete messages in configured channels (immediate deletion)
+    if auto_delete_config_col is not None:
+        config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": message.guild.id})
+        if config and message.channel.id in config.get("channels", []):
+            try:
+                await message.delete()
+            except:
+                pass
+            return  # stop processing further
 
     if message.content.startswith("."):
         await bot.process_commands(message)
@@ -1433,20 +1445,17 @@ async def show_commands(ctx):
             "title": "RblXLua Tool Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Lua Deobf [.l]`", "value": "Deobfuscate Lua (Auto, Prometheus, WeAreDevs, then enhanced fallback).", "inline": False},
-                {"name": "`Fetch Lua [.get]`", "value": "Fetch and decode raw source from URL or attachment.", "inline": False},
-                {"name": "`Env Logger [.env]`", "value": "Bypass anti-env checks and unpack the script.", "inline": False},
-                {"name": "`Obfuscate [.obf]`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
+                {"name": "`.obf`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
+                {"name": "`.level` / `.lvl`", "value": "Check your current level and XP.", "inline": False},
+                {"name": "`.cmds`", "value": "Show this help menu.", "inline": False},
+                {"name": "`.db`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
             ]
         },
         {
             "title": "RblXLua Tool Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Commands [.cmds]`", "value": "Show this help menu.", "inline": False},
-                {"name": "`Database [.db]`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
-                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key", "inline": False},
-                {"name": "**Prefix Commands**", "value": "`.level` / `.lvl` - Check your current level and XP", "inline": False},
+                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key\n`/auto_delete_messages` - Add a channel for auto-deletion\n`/atd_view_channel` - View auto-delete channels\n`/atd_remove_channel` - Remove a channel from auto-delete", "inline": False},
             ]
         }
     ]
@@ -1456,7 +1465,80 @@ async def show_commands(ctx):
     message = await ctx.send(embed=embed, view=view, mention_author=True)
     view.message = message
 
-# ========== HELPER FUNCTIONS ==========
+# ========== AUTO‑DELETE SLASH COMMANDS ==========
+
+@bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
+@app_commands.describe(channel="The text channel to enable auto-deletion for")
+@app_commands.default_permissions(administrator=True)
+async def auto_delete_messages(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Adds the specified channel to the auto-delete list."""
+    guild_id = interaction.guild.id
+    config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
+    channels = config.get("channels", []) if config else []
+
+    if channel.id in channels:
+        await interaction.response.send_message(f"❌ {channel.mention} is already in the auto-delete list.", ephemeral=True)
+        return
+
+    channels.append(channel.id)
+    await asyncio.to_thread(auto_delete_config_col.update_one,
+        {"guild_id": guild_id},
+        {"$set": {"channels": channels}},
+        upsert=True
+    )
+    await interaction.response.send_message(f"✅ {channel.mention} has been added to auto-delete. All new messages there will be instantly deleted.", ephemeral=True)
+
+@bot.tree.command(name="atd_view_channel", description="View all channels where auto-deletion is active")
+async def atd_view_channel(interaction: discord.Interaction):
+    """Lists all channels configured for auto-deletion in this server."""
+    config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": interaction.guild.id})
+    if not config or not config.get("channels"):
+        await interaction.response.send_message("ℹ️ No channels are currently set for auto-deletion.", ephemeral=True)
+        return
+
+    channel_ids = config["channels"]
+    channel_mentions = []
+    for cid in channel_ids:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            channel_mentions.append(ch.mention)
+        else:
+            channel_mentions.append(f"#deleted-channel ({cid})")  # fallback
+    embed = discord.Embed(
+        title="📋 Auto‑Delete Channels",
+        description="\n".join(channel_mentions) or "None",
+        color=0x1e90ff
+    )
+    embed.set_footer(text=f"Total: {len(channel_mentions)} channels")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="atd_remove_channel", description="Remove a channel from the auto-delete list")
+@app_commands.describe(channel="The channel to remove from auto-deletion")
+@app_commands.default_permissions(administrator=True)
+async def atd_remove_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Removes a channel from the auto-delete list."""
+    guild_id = interaction.guild.id
+    config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
+    if not config or not config.get("channels"):
+        await interaction.response.send_message("❌ No channels are currently set for auto-deletion.", ephemeral=True)
+        return
+
+    channels = config["channels"]
+    if channel.id not in channels:
+        await interaction.response.send_message(f"❌ {channel.mention} is not in the auto-delete list.", ephemeral=True)
+        return
+
+    channels.remove(channel.id)
+    if channels:
+        await asyncio.to_thread(auto_delete_config_col.update_one,
+            {"guild_id": guild_id},
+            {"$set": {"channels": channels}}
+        )
+    else:
+        await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
+    await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
+
+# ========== HELPER FUNCTIONS (kept for .obf and bypass) ==========
 
 def decode_all_escapes(s: str) -> str:
     try:
@@ -1527,89 +1609,6 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-PROMETHEUS_DEOBF_LUA = r"""
-local function DeobfuscatePrometheus(source)
-    local load = loadstring or load
-    local encoded = source:match("return%(function%(%.-%)local L={(.-)}")
-    if not encoded then return nil, "Not valid Prometheus format" end
-    local parts = {}
-    for s in encoded:gmatch('"(.-)"') do table.insert(parts, s) end
-    local function b64dec(data)
-        local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-        data = data:gsub('[^'..b..'=]', '')
-        return (data:gsub('.', function(x)
-            if x == '=' then return '' end
-            local r,f='',(b:find(x)-1)
-            for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
-            return r
-        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-            if #x ~= 8 then return '' end
-            local c=0
-            for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
-            return string.char(c)
-        end))
-    end
-    local output = {}
-    for _,chunk in ipairs(parts) do
-        local ok, res = pcall(b64dec, chunk)
-        if ok and res then table.insert(output, res) end
-    end
-    local raw = table.concat(output)
-    local clean = raw:gsub('%z', ''):gsub('%c+', '\n')
-    return clean
-end
-
-local file = io.open(arg[1], "r")
-if not file then print("ERROR: Cannot read input file") os.exit(1) end
-local source = file:read("*a")
-file:close()
-
-local result, err = DeobfuscatePrometheus(source)
-if not result then
-    print("ERROR: " .. err)
-    os.exit(1)
-end
-
-local out = io.open(arg[2], "w")
-if not out then print("ERROR: Cannot write output") os.exit(1) end
-out:write(result)
-out:close()
-print("SUCCESS")
-"""
-
-async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
-
 def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
     try:
         b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
@@ -1635,1066 +1634,6 @@ end)(...)'''
         return True, obfuscated
     except Exception as e:
         return False, str(e)
-
-def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
-    try:
-        patterns = [
-            r'loadstring\s*\(\s*["\']([A-Za-z0-9+/=]{20,})["\']\s*\)\s*\(?\s*\)?',
-            r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)',
-            r'local\s+_G\s*=\s*["\']([^"\']+)["\']',
-        ]
-        for pat in patterns:
-            m = re.search(pat, code)
-            if m:
-                encoded = m.group(1)
-                try:
-                    decoded = base64.b64decode(encoded).decode('utf-8', errors='replace')
-                    if len(decoded) > 10:
-                        return True, decoded
-                except:
-                    pass
-        return False, "No WeAreDevs pattern found"
-    except Exception as e:
-        return False, str(e)
-
-def deobfuscate_code(source_text):
-    max_depth = 8
-    report = {"detected": [], "steps": [], "anti": [], "snippets": []}
-
-    def scan_signatures(txt):
-        sigs = [
-            ("Prometheus", r'return\(function\(%.-%\)local L={'),
-            ("Lunr", r'return\(function\(L,M,I\)'),
-            ("Luraph", r'--.*Luraph|luraph\.net'),
-            ("Fualmor", r'fualmor|canary|_tripwire|4294967296'),
-            ("WeAreDevs", r'wearedevs\.net|WAD_OBF|loadstring%s*%(%s*["\']%s*[A-Za-z0-9+/=]+%s*["\']'),
-            ("Anti-Env/Log", r'envlog|galactic|writefile.*\.lua|discord.*webhook')
-        ]
-        lines = txt.split('\n')
-        for name, pat in sigs:
-            try:
-                if re.search(pat, txt, re.I):
-                    if name not in report["detected"]:
-                        report["detected"].append(name)
-                    if "Anti" in name:
-                        report["anti"].append(name)
-                    for i, line in enumerate(lines):
-                        if re.search(pat, line, re.I):
-                            start = max(0, i-1)
-                            end = min(len(lines), i+2)
-                            snippet = '\n'.join(lines[start:end])
-                            if snippet not in report["snippets"]:
-                                report["snippets"].append(snippet)
-                            if len(report["snippets"]) >= 10:
-                                break
-            except re.error:
-                pass
-
-    def clean_escapes(txt):
-        txt = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), txt)
-        txt = re.sub(r'\\([0-9]{1,3})', lambda m: chr(int(m.group(1))), txt)
-        txt = re.sub(r'\\(.)', r'\1', txt)
-        return txt.strip()
-
-    def decode_b64(txt):
-        found = re.findall(r'["\']([A-Za-z0-9+/=]{25,})["\']', txt)
-        for chunk in found:
-            try:
-                out = base64.b64decode(chunk).decode('utf-8', 'replace')
-                if len(out) > len(chunk) and out != txt:
-                    return True, out
-            except:
-                pass
-        return False, ""
-
-    def decode_strchar(txt):
-        m = re.search(r'string\.char\(([\d,\s]+)\)', txt, re.DOTALL)
-        if not m: return False, ""
-        try:
-            nums = [int(n) for n in re.findall(r'\d+', m.group(1)) if n.isdigit()]
-            out = ''.join(chr(n) for n in nums)
-            if len(out) > 30 and out != txt:
-                return True, out
-        except:
-            pass
-        return False, ""
-
-    def decode_xor(txt):
-        mk = re.search(r'local\s+_?k\s*=\s*(\d{1,3})', txt)
-        md = re.search(r'local\s+_?d\s*=\s*\{([^}]{120,})\}', txt, re.DOTALL)
-        if mk and md:
-            try:
-                key = int(mk.group(1))
-                nums = [int(n) for n in re.findall(r'\d+', md.group(1)) if n.isdigit()]
-                out = ''.join(chr(b ^ key) for b in nums)
-                if len(out) > 30 and out != txt:
-                    return True, out
-            except:
-                pass
-        mx = re.search(r'["\']([^"\']{5,30})["\'].*?["\']([A-Za-z0-9+/=]{30,})["\']', txt, re.DOTALL)
-        if mx:
-            try:
-                k, d = mx.group(1), base64.b64decode(mx.group(2)).decode('latin1', 'replace')
-                out = ''.join(chr(ord(c) ^ ord(k[i % len(k)])) for i, c in enumerate(d))
-                if len(out) > 30 and out != txt:
-                    return True, out
-            except:
-                pass
-        return False, ""
-
-    def extract_loadstring(txt):
-        m = re.search(r'loadstring\s*\(\s*["\']([^"\']+)["\']\s*\)', txt)
-        if m:
-            return True, decode_all_escapes(m.group(1))
-        return False, ""
-
-    buf = clean_escapes(source_text)
-    scan_signatures(buf)
-    changed = True
-    depth = 0
-    while changed and depth < max_depth:
-        changed = False
-        depth += 1
-        ok, res = decode_b64(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: Base64 decoded")
-        ok, res = decode_strchar(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: string.char decoded")
-        ok, res = decode_xor(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: XOR decoded")
-        ok, res = extract_loadstring(buf)
-        if ok:
-            buf = res
-            changed = True
-            report["steps"].append(f"Layer {depth}: loadstring extracted")
-        buf = re.sub(r'if\s*\w+\s*[=<>]+\s*\w+\s*then\s*return\s*[01]+\s*end', '', buf)
-        buf = re.sub(r'\b\w{18,}\s*[=<>]+\s*[01]', '', buf)
-        buf = re.sub(r'--\[\[.*?\]\]', '', buf, re.DOTALL)
-        buf = re.sub(r'--.*$', '', buf, re.MULTILINE)
-
-    buf = re.sub(r'\n\s*\n+', '\n', buf)
-    return {
-        "result": buf.strip(),
-        "layers_done": depth,
-        "detected": report["detected"],
-        "anti_found": report["anti"],
-        "steps": report["steps"],
-        "snippets": report["snippets"][:10],
-        "status": "Fully unpacked" if depth >= 3 else "Partially unpacked" if depth > 0 else "No unpack needed"
-    }
-
-class EnvBypassDumper:
-    def __init__(self):
-        self.removed_snippets = []
-
-    def remove_anti_env_checks(self, src):
-        patterns_remove = [
-            (r'if\s*_?G\s*[=!]=?\s*nil\s*then.*?end', '--[[G check removed]]'),
-            (r'if\s*_?ENV\s*[=!]=?\s*nil\s*then.*?end', '--[[ENV check removed]]'),
-            (r'if\s*getgenv\s*[=!]=?\s*nil\s*then.*?end', '--[[getgenv check removed]]'),
-            (r'if\s*type\s*\(\s*getgenv\s*\)\s*~=\s*["\']function["\'].*?end', '--[[type check removed]]'),
-            (r'_?\._?LOADED\s*[=!]=?\s*true.*?return', '--[[LOADED check removed]]'),
-            (r'_?\._?ENVLOG.*?Kick\(.*?\)', '--[[ENVLOG kick removed]]'),
-            (r'_?\._?GALACTIC.*?Kick\(.*?\)', '--[[GALACTIC kick removed]]'),
-            (r'_?\._?LOGGER.*?Kick\(.*?\)', '--[[LOGGER kick removed]]'),
-            (r'_?\._?UNOBF.*?Kick\(.*?\)', '--[[UNOBF kick removed]]'),
-            (r'_?\._?INTERCEPT.*?Kick\(.*?\)', '--[[INTERCEPT kick removed]]'),
-            (r'if\s*debug\s*~=\s*nil.*?then.*?error.*?end', '--[[debug error removed]]'),
-            (r'for\s+_+,\s+v\s+in\s+pairs\s*\(\s*debug\s*\)\s+do.*?end', '--[[debug pairs removed]]'),
-            (r'if\s*type\s*\(\s*rawget\s*\)\s*~=', '--[[rawget type check removed]]'),
-            (r'if\s*loadstring\s*~=\s*nil\s+and\s+_l\s*~=\s*loadstring', '--[[loadstring check removed]]'),
-            (r'if\s*_p\s*~=\s*nil\s+or\s+_j\s*~=\s*nil', '--[[_p/_j check removed]]'),
-            (r'local\s+_v_logDetect\s*=\s*function\(\)\s*_v_p\(_v_err,\s*"logging detected"\);\s*while\s+true\s+do\s+end;\s*end;', '--[[logDetect removed]]'),
-            (r'_v_logDetect\(\)', '--[[logDetect call removed]]'),
-            (r'if\s+not\s+_c_v\(_v_t\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_t check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_p\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_p check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_xp\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_xp check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_sm\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_sm check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_req\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_req check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_r\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_r check removed]]'),
-            (r'if\s+not\s+_c_v\(_v_rs\)\s+then\s*_v_logDetect\(\)\s*end;?', '--[[_v_rs check removed]]'),
-            (r'_v_tamperCheck\(\)', '--[[tamperCheck removed]]'),
-            (r'_proxy_active\s*=\s*true;?', '--[[proxy activation removed]]'),
-            (r'local\s+_s_set,\s*_setfenv\s*=\s*_v_p\(function\(\)\s*return\s*_v_g\["setfenv"\]\s*end\);?.*?end;?', '--[[setfenv spoof removed]]'),
-            (r'return\s+_self_ref;?', 'return _self_ref; --[[spoofed]]'),
-        ]
-        out = src
-        for pat, repl in patterns_remove:
-            matches = list(re.finditer(pat, out, re.DOTALL | re.IGNORECASE))
-            for m in matches:
-                snippet = out[m.start():m.end()]
-                if snippet not in self.removed_snippets:
-                    self.removed_snippets.append(snippet)
-            out = re.sub(pat, repl, out, flags=re.DOTALL | re.IGNORECASE)
-        return out
-
-    def patch_function_checks(self, src):
-        repl = [
-            (r'local\s+_l\s*=\s*loadstring.*?local\s+_l\s*=\s*loadstring', 'local _l = loadstring or load'),
-            (r'local\s+_g\s*=\s*game\.HttpGet', 'local _g = function() return "" end'),
-            (r'if\s+_l\s*~=\s*loadstring.*?then\s*__:Kick.*?end', '--[[loadstring kick removed]]'),
-            (r'if\s+_g\s*~=\s*game\.HttpGet.*?then\s*__:Kick.*?end', '--[[HttpGet kick removed]]')
-        ]
-        out = src
-        for old, new in repl:
-            out = re.sub(old, new, out, flags=re.DOTALL)
-        return out
-
-    def inject_dummy_returns(self, src):
-        block = [
-            "writefile", "readfile", "listfiles", "makefolder",
-            "delfile", "getfenv", "setfenv", "getgenv",
-            "debug.getupvalue", "debug.setupvalue", "debug.getlocal",
-            "debug.setlocal", "debug.getregistry", "hookfunction",
-            "rawset", "rawget", "rawequal", "newcclosure",
-            "loadstring", "load", "require"
-        ]
-        out = src
-        for name in block:
-            out = re.sub(
-                rf'if\s+type\s*\(\s*{name}\s*\)\s*[=!]=?\s*["\']?nil["\']?\s+then.*?(Kick|error|return).*?end',
-                f'--[[{name} check removed]]',
-                out, flags=re.DOTALL
-            )
-        return out
-
-    def full_bypass(self, code):
-        out = code
-        self.removed_snippets = []
-        out = self.remove_anti_env_checks(out)
-        out = self.patch_function_checks(out)
-        out = self.inject_dummy_returns(out)
-        out = re.sub(r'local\s+function\s+_v_logDetect\(\)[^;]*;', '--[[logDetect removed]]', out, flags=re.DOTALL)
-        return {
-            "patched_code": out.strip(),
-            "bypassed_count": len(self.removed_snippets)
-        }
-
-def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None, env_bypass: dict=None):
-    if env_bypass:
-        desc = f"{ctx.author.mention}\n**Anti-env checks bypassed:** `{env_bypass['bypassed_count']}`\n**Size:** `{round(len(env_bypass['patched_code'].encode('utf-8'))/1024, 2)} KB`\n\n**Protection Snippets:**\n```lua\n"
-        snippets = env_bypass.get("snippets", [])
-        if snippets:
-            snippet_text = ""
-            for i, snippet in enumerate(snippets[:3]):
-                snippet_text += f"-- Removed {i+1}:\n{snippet}\n\n"
-            if len(snippet_text) > 500:
-                snippet_text = snippet_text[:500] + "\n... [truncated]"
-            desc += snippet_text + "```"
-        else:
-            desc += "No specific protection snippets found.\n```"
-        content = env_bypass["patched_code"]
-    elif deobf:
-        obf = deobf["obfuscator"]
-        steps = "\n".join([f"• {s}" for s in deobf["steps"]]) if deobf["steps"] else "• No unpack steps"
-        anti = "\n".join(deobf["anti_found"]) if deobf["anti_found"] else "• None detected"
-        desc = f"""{ctx.author.mention}
-**Obfuscator:** `{obf['name']}`
-**Confidence:** `{obf['confidence']}%`
-**Status:** `{deobf['status']}`
-**Layers:** `{deobf['layers_reached']}/{deobf['max_layers']}`
-
-**Anti-Env / Anti-Tamper Found:**
-{anti}
-
-**Processing Steps:**
-{steps}
-"""
-        snippets = deobf.get("snippets", [])
-        if snippets:
-            desc += "\n**Protection Snippets:**\n```lua\n"
-            snippet_text = ""
-            for i, snippet in enumerate(snippets[:3]):
-                snippet_text += f"-- Snippet {i+1}:\n{snippet}\n\n"
-            if len(snippet_text) > 500:
-                snippet_text = snippet_text[:500] + "\n... [truncated]"
-            desc += snippet_text + "```"
-        content = deobf["result"]
-    elif raw:
-        desc = f"{ctx.author.mention}\n**Status:** Raw decoded content"
-        content = decode_all_escapes(raw)
-    else:
-        emb = discord.Embed(title=title, color=0xe74c3c, description=f"{ctx.author.mention}\n❌ Empty result")
-        return emb, None
-
-    if not content or len(content) < 5:
-        emb = discord.Embed(title=title, color=0xe74c3c, description=desc+"\n❌ No usable code")
-        return emb, None
-
-    size_b = content.encode('utf-8')
-    size_kb = len(size_b) / 1024
-    file = None
-    if env_bypass:
-        preview_len = int(len(content) * 0.3)
-        preview_len = min(preview_len, 500)
-        if preview_len < 50:
-            preview_len = min(150, len(content))
-        preview = content[:preview_len]
-        if len(content) > preview_len:
-            preview += "... [truncated]"
-        desc += f"\n\n**Patched Code Preview (30%):**\n```lua\n{preview}\n```"
-    elif deobf:
-        if deobf['layers_reached'] > 0 and deobf['status'] != "No unpack needed":
-            preview_len = int(len(content) * 0.3)
-            preview_len = min(preview_len, 500)
-            if preview_len < 50:
-                preview_len = min(150, len(content))
-            preview = content[:preview_len]
-            if len(content) > preview_len:
-                preview += "... [truncated]"
-            desc += f"\n\n**Deobfuscated Code Preview (30%):**\n```lua\n{preview}\n```"
-    elif raw:
-        preview = content[:500] + ("..." if len(content) > 500 else "")
-        desc += f"\n\n**Raw Code Preview:**\n```lua\n{preview}\n```"
-
-    if size_kb > 10 or len(content) > 1800:
-        file = File(io.BytesIO(size_b), filename="processed.lua")
-        if len(desc) > 5000:
-            desc = desc[:5000] + "... [truncated description]"
-        if not desc.endswith("Full code sent as file"):
-            desc += f"\n📦 Size: `{round(size_kb,2)} KB` → Full code sent as file"
-        emb = discord.Embed(title=title, color=0x3498db, description=desc)
-    else:
-        emb = discord.Embed(title=title, color=0x2ecc71 if "Fully unpacked" in desc else 0xf39c12, description=desc)
-    emb.set_footer(text=f"Requested by {ctx.author}")
-    return emb, file
-
-# ========== NEW LUraph PIPELINE INTEGRATION ==========
-
-# These imports assume the pipeline modules are available.
-# If not, the bot will fallback gracefully.
-try:
-    from . import luraph_loader as luraph
-    from . import luraph_capture
-    from . import luraph_decompiler
-    from . import luraph_dispatch
-    from . import luraph_full
-    from . import luraph_recover
-    PIPELINE_AVAILABLE = True
-except ImportError:
-    PIPELINE_AVAILABLE = False
-
-class PipelineError(RuntimeError):
-    pass
-
-def run_full_loader(
-    input_path: Union[str, Path],
-    output_dir: Union[str, Path],
-    *,
-    runtime: Union[str, Sequence[str]] = "lune",
-    timeout: int = 300,
-    split_protos: bool = False,
-    force: bool = False,
-    keep_failed: bool = False,
-    progress: Optional[Callable[[str], None]] = None,
-) -> dict:
-    if not PIPELINE_AVAILABLE:
-        raise PipelineError("Luraph pipeline modules are not available.")
-    source_path = Path(input_path)
-    output = Path(output_dir)
-    if not source_path.is_file():
-        raise PipelineError("input file does not exist: %s" % source_path)
-    if output.exists() and not force:
-        raise PipelineError("output already exists (use --force): %s" % output)
-
-    source = source_path.read_text(encoding="utf-8", errors="surrogateescape")
-    if not luraph.detect(source):
-        raise PipelineError("input is not a supported Luraph v14.x loader")
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=output.name + ".partial-", dir=str(output.parent)))
-    started = time.monotonic()
-    try:
-        artifacts = stage / "artifacts"
-        artifacts.mkdir()
-
-        _emit(progress, "[1/5] statically unpacking loader")
-        vm_source, bytecode = luraph.unpack(source)
-        vm_path = artifacts / "interpreter.vm.luau"
-        bytecode_path = artifacts / "bytecode.bin"
-        vm_path.write_bytes(vm_source)
-        bytecode_path.write_bytes(bytecode)
-
-        _emit(progress, "[2/5] safely capturing prototypes (payload disabled)")
-        capture = luraph_capture.run_capture(
-            vm_path,
-            bytecode_path,
-            artifacts,
-            runtime=runtime,
-            timeout=timeout,
-            progress=progress,
-        )
-
-        _emit(progress, "[3/5] recovering sample-local dispatcher semantics")
-        semantics_path = artifacts / "opcode_semantics.json"
-        semantics_text_path = artifacts / "opcode_semantics.txt"
-        luraph_recover.recover_dispatch(
-            capture.factory,
-            capture.runtime_facts,
-            semantics_path,
-            semantics_text_path,
-        )
-
-        _emit(progress, "[4/5] devirtualising the complete prototype tree")
-        program = luraph_full.load_full_ir(capture.full_ir)
-        semantics = luraph_dispatch.load_semantics(semantics_path)
-        used = sorted({
-            instruction.opcode
-            for proto in program.protos.values()
-            for instruction in proto.instructions
-        })
-        luraph_dispatch.validate_semantics(semantics, used)
-        manifest = luraph_full.write_program(
-            program,
-            semantics,
-            stage,
-            split_protos=split_protos,
-        )
-
-        _emit(progress, "[5/5] decompiling and compile-checking Luau source")
-        decompiler = luraph_decompiler.write_decompiled(program, semantics, stage)
-        luraph_decompiler.compile_check(
-            stage / decompiler["file"],
-            artifacts,
-            runtime=runtime,
-            timeout=timeout,
-            progress=progress,
-        )
-        decompiler["compile_checked"] = True
-        (stage / "decompiler.json").write_text(
-            json.dumps(decompiler, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        manifest["decompiled"] = decompiler["file"]
-        manifest["decompiler"] = decompiler
-        for generated in (decompiler["file"], "decompiler.json"):
-            if generated not in manifest["files"]:
-                manifest["files"].append(generated)
-        (stage / "manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-
-        elapsed = time.monotonic() - started
-        pipeline = {
-            "format_version": 2,
-            "input": str(source_path),
-            "runtime": runtime if isinstance(runtime, str) else list(runtime),
-            "payload_executed": False,
-            "prototypes": manifest["prototypes"],
-            "instructions": manifest["instructions"],
-            "opcode_slots": manifest["opcode_slots"],
-            "elapsed_seconds": round(elapsed, 3),
-            "artifacts": {
-                "vm_source": "artifacts/interpreter.vm.luau",
-                "bytecode": "artifacts/bytecode.bin",
-                "factory": "artifacts/interpreter.factory.luau",
-                "full_ir": "artifacts/full_ir.tsv",
-                "runtime_facts": "artifacts/runtime_A.tsv",
-                "semantics": "artifacts/opcode_semantics.json",
-                "capture_runner": "artifacts/capture_runner.luau",
-                "compile_runner": "artifacts/compile_decompiled.luau",
-            },
-            "decompiler": decompiler,
-            "output": manifest,
-        }
-        (stage / "pipeline.json").write_text(
-            json.dumps(pipeline, indent=2, sort_keys=True), encoding="utf-8"
-        )
-
-        if output.exists():
-            shutil.rmtree(output)
-        os.replace(stage, output)
-        return pipeline
-    except Exception:
-        if keep_failed:
-            failure_note = stage / "FAILED.txt"
-            failure_note.write_text(
-                "The pipeline did not complete. This directory may contain sensitive "
-                "decoded artifacts; review before sharing.\n",
-                encoding="utf-8",
-            )
-        else:
-            shutil.rmtree(stage, ignore_errors=True)
-        raise
-
-def _emit(callback: Optional[Callable[[str], None]], message: str) -> None:
-    if callback is not None:
-        callback(message)
-
-# ========== END LUraph PIPELINE ==========
-
-class AutoDeobfuscator:
-    def __init__(self, verbose: bool = True):
-        self.verbose = verbose
-        self.layer_count = 0
-        self.max_layers = 100
-
-    def is_likely_python_code(self, data):
-        if isinstance(data, bytes):
-            try:
-                data = data.decode('utf-8', errors='ignore')
-            except:
-                return False
-        python_indicators = [
-            'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ',
-            'try:', 'except:', 'print(', 'return ', '__name__', '__main__'
-        ]
-        obfuscation_indicators = [
-            'exec(', 'eval(', 'marshal.loads', 'base64.b64decode',
-            'base64.b32decode', 'base64.b85decode',
-            'zlib.decompress', 'gzip.decompress', 'bz2.decompress',
-            'compile(', 'bytes.fromhex', 'binascii.'
-        ]
-        data_str = str(data)
-        data_lower = data_str.lower()
-        for indicator in obfuscation_indicators:
-            if indicator.lower() in data_lower:
-                return False
-        indicator_count = sum(1 for ind in python_indicators if ind in data_str)
-        return indicator_count >= 3
-
-    def try_decode_base64(self, data):
-        try:
-            if isinstance(data, str):
-                data = data.encode()
-            elif isinstance(data, memoryview):
-                data = bytes(data)
-            if isinstance(data, (bytes, bytearray)):
-                data = data.strip()
-            decoded = base64.b64decode(data, validate=True)
-            if len(decoded) > 0:
-                return decoded
-        except:
-            pass
-        return None
-
-    def try_decode_base32(self, data):
-        try:
-            if isinstance(data, str):
-                data = data.encode()
-            decoded = base64.b32decode(data)
-            if len(decoded) > 0:
-                return decoded
-        except:
-            pass
-        return None
-
-    def try_decode_base85(self, data):
-        try:
-            if isinstance(data, str):
-                data = data.encode()
-            decoded = base64.b85decode(data)
-            if len(decoded) > 0:
-                return decoded
-        except:
-            pass
-        return None
-
-    def try_decode_hex(self, data):
-        try:
-            if isinstance(data, (bytes, bytearray, memoryview)):
-                if isinstance(data, memoryview):
-                    data = bytes(data)
-                data = data.decode('utf-8', errors='ignore')
-            if isinstance(data, str):
-                data = data.strip().replace('0x', '').replace('\\x', '')
-                if all(c in '0123456789abcdefABCDEF' for c in data):
-                    decoded = bytes.fromhex(data)
-                    if len(decoded) > 0:
-                        return decoded
-        except:
-            pass
-        return None
-
-    def try_decompress_zlib(self, data):
-        try:
-            decompressed = zlib.decompress(data)
-            if len(decompressed) > 0:
-                return decompressed
-        except:
-            pass
-        return None
-
-    def try_decompress_gzip(self, data):
-        try:
-            decompressed = gzip.decompress(data)
-            if len(decompressed) > 0:
-                return decompressed
-        except:
-            pass
-        return None
-
-    def try_decompress_bz2(self, data):
-        try:
-            decompressed = bz2.decompress(data)
-            if len(decompressed) > 0:
-                return decompressed
-        except:
-            pass
-        return None
-
-    def try_unmarshal(self, data):
-        try:
-            code_obj = marshal.loads(data)
-            if hasattr(code_obj, 'co_consts'):
-                for const in code_obj.co_consts:
-                    if isinstance(const, bytes) and len(const) > 100:
-                        return const
-            reconstructed = self.reconstruct_from_bytecode(code_obj)
-            if reconstructed:
-                return reconstructed.encode('utf-8')
-            return None
-        except:
-            pass
-        return None
-
-    def reconstruct_from_bytecode(self, code_obj):
-        try:
-            if not hasattr(code_obj, 'co_consts') or not hasattr(code_obj, 'co_names'):
-                return None
-            imports = []
-            names = code_obj.co_names
-            consts = code_obj.co_consts
-            if 'requests' in names or 'urllib' in names:
-                imports.append('import requests')
-            if 'os' in names:
-                imports.append('import os')
-            if 'sys' in names:
-                imports.append('import sys')
-            if 'marshal' in names:
-                imports.append('import marshal')
-            if 'base64' in names:
-                imports.append('import base64')
-            if 'zlib' in names:
-                imports.append('import zlib')
-            source_lines = []
-            source_lines.append('# Reconstructed source code from Python bytecode')
-            source_lines.append('# Deobfuscated by Auto Deobfuscator\n')
-            if imports:
-                source_lines.extend(imports)
-                source_lines.append('')
-            if 'system' in names and 'os' in names:
-                for const in consts:
-                    if isinstance(const, str) and ('http' in const or 'clear' in const or 'xdg-open' in const):
-                        source_lines.append(f"os.system('{const}')")
-            for const in consts:
-                if isinstance(const, str) and len(const) > 100 and '\n' in const:
-                    source_lines.append(f"\nlogo = '''{const}'''")
-                    if 'print' in names:
-                        source_lines.append('print(logo)\n')
-                    break
-            for const in consts:
-                if isinstance(const, str) and 'http' in const and len(const) > 20:
-                    source_lines.append(f"url = '{const}'")
-                    break
-            if 'input' in names:
-                for const in consts:
-                    if isinstance(const, str) and any(kw in const.lower() for kw in ['msisdn', 'phone', 'number', 'enter']):
-                        varname = [n for n in names if n not in ['input', 'print', 'os', 'sys']][0] if names else 'user_input'
-                        source_lines.append(f"{varname} = input('{const}')")
-                        break
-            if 'headers' in names or 'params' in names:
-                source_lines.append('\n# Headers and parameters')
-                source_lines.append('headers = {')
-                for const in consts:
-                    if isinstance(const, str) and 'X-KM' in const:
-                        idx = list(consts).index(const)
-                        if idx + 1 < len(consts) and isinstance(consts[idx + 1], str):
-                            source_lines.append(f"    '{const}': '{consts[idx + 1]}'")
-                source_lines.append('}')
-            if 'get' in names and 'requests' in imports:
-                source_lines.append('\n# Make API request')
-                source_lines.append('response = requests.get(url, headers=headers, params=params)')
-                source_lines.append('\nif response.status_code == 200:')
-                source_lines.append('    data = response.json()')
-                for const in consts:
-                    if isinstance(const, str) and const in ['name', 'status', 'useld', 'user_type']:
-                        source_lines.append(f"    if '{const}' in data:")
-                        label = [c for c in consts if isinstance(c, str) and const.lower() in c.lower()]
-                        if label:
-                            source_lines.append(f"        print('{label[0]}', data['{const}'])")
-                source_lines.append('else:')
-                source_lines.append('    print(\'Error:\', response.status_code)')
-            result = '\n'.join(source_lines)
-            if len(source_lines) > 5:
-                return result
-            return None
-        except Exception as e:
-            if self.verbose:
-                print(f"Bytecode reconstruction failed: {e}")
-            return None
-
-    def try_rot13(self, data):
-        try:
-            decoded = codecs.decode(data, 'rot13')
-            if decoded != data and self.is_likely_python_code(decoded):
-                return decoded
-        except:
-            pass
-        return None
-
-    def extract_from_exec(self, code):
-        patterns = [
-            r"exec\s*\(\s*marshal\.loads\s*\(\s*(b['\"].*?['\"])\s*\)",
-            r"exec\s*\(\s*base64\.b64decode\s*\(\s*(b['\"].*?['\"])\s*\)",
-            r"exec\s*\(\s*zlib\.decompress\s*\(\s*(b['\"].*?['\"])\s*\)",
-            r"exec\s*\(\s*(.+?)\s*\)",
-            r"eval\s*\(\s*(.+?)\s*\)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, code, re.DOTALL)
-            if match:
-                extracted = match.group(1)
-                try:
-                    if extracted.startswith('b'):
-                        return eval(extracted)
-                    return extracted
-                except:
-                    return extracted
-        return None
-
-    def decode_layer(self, data):
-        if isinstance(data, str):
-            extracted = self.extract_from_exec(data)
-            if extracted and extracted != data:
-                return extracted, "exec_extraction"
-            rot13_result = self.try_rot13(data)
-            if rot13_result:
-                return rot13_result, "rot13"
-            try:
-                data_bytes = data.encode('utf-8')
-            except:
-                data_bytes = data.encode('latin-1')
-        else:
-            data_bytes = data
-
-        result = self.try_unmarshal(data_bytes)
-        if result:
-            return result, "marshal"
-        result = self.try_decompress_zlib(data_bytes)
-        if result:
-            return result, "zlib"
-        result = self.try_decompress_gzip(data_bytes)
-        if result:
-            return result, "gzip"
-        result = self.try_decompress_bz2(data_bytes)
-        if result:
-            return result, "bz2"
-        result = self.try_decode_base64(data_bytes)
-        if result:
-            return result, "base64"
-        result = self.try_decode_base32(data_bytes)
-        if result:
-            return result, "base32"
-        result = self.try_decode_base85(data_bytes)
-        if result:
-            return result, "base85"
-        result = self.try_decode_hex(data_bytes)
-        if result:
-            return result, "hex"
-        return None, "none"
-
-    def deobfuscate(self, input_data):
-        current_data = input_data
-        self.layer_count = 0
-        while self.layer_count < self.max_layers:
-            self.layer_count += 1
-            if self.is_likely_python_code(current_data):
-                break
-            decoded, method = self.decode_layer(current_data)
-            if decoded is None or method == "none":
-                break
-            if self.verbose:
-                size = len(decoded) if isinstance(decoded, (str, bytes)) else 0
-                print(f"Layer {self.layer_count}: Decoded using {method} → {size} bytes")
-            current_data = decoded
-        if isinstance(current_data, bytes):
-            try:
-                current_data = current_data.decode('utf-8')
-            except:
-                try:
-                    current_data = current_data.decode('latin-1')
-                except:
-                    current_data = str(current_data)
-        if isinstance(current_data, (bytes, bytearray, memoryview)):
-            if isinstance(current_data, memoryview):
-                current_data = bytes(current_data)
-            try:
-                current_data = current_data.decode('utf-8', errors='ignore')
-            except:
-                current_data = str(current_data)
-        return str(current_data), self.layer_count
-
-# ========== COMMANDS ==========
-
-@bot.group(name="db", invoke_without_command=True)
-async def db_group(ctx):
-    await delete_cmds_only(ctx)
-    emb = discord.Embed(title="Database Commands", color=0x2b2d31, description=f"Hey {ctx.author.mention}\nUse these sub-commands:")
-    emb.add_field(name="`db status`", value="Check database connection", inline=False)
-    emb.add_field(name="`db clear`", value="Clear stored data", inline=False)
-    await ctx.reply(embed=emb, mention_author=True)
-
-@db_group.command(name="status")
-async def db_status(ctx):
-    await delete_cmds_only(ctx)
-    if db is not None:
-        emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nConnected")
-    else:
-        emb = discord.Embed(title="Database Status", color=0xe74c3c, description=f"❌ {ctx.author.mention}\nNot available")
-    await ctx.reply(embed=emb, mention_author=True)
-
-@db_group.command(name="clear")
-@commands.is_owner()
-async def db_clear(ctx):
-    await delete_cmds_only(ctx)
-    if settings_col is not None and logs_col is not None:
-        await asyncio.to_thread(settings_col.delete_many, {})
-        await asyncio.to_thread(logs_col.delete_many, {})
-    emb = discord.Embed(title="Database Status", color=0x2ecc71, description=f"✅ {ctx.author.mention}\nAll data cleared")
-    await ctx.reply(embed=emb, mention_author=True)
-
-@bot.command(name="l")
-async def deobf_command(ctx, *, link=None):
-    await delete_cmds_only(ctx)
-    if not link:
-        content = await extract_code(ctx)
-    else:
-        ok, content, msg = await fetch_content(link)
-        if not ok:
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-    if not content:
-        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
-        return await ctx.reply(embed=emb, mention_author=True)
-
-    proc = await ctx.reply(f"🔓 Decoding & analyzing {ctx.author.mention}...", mention_author=True)
-
-    try:
-        # Attempt Luraph pipeline first if available
-        if PIPELINE_AVAILABLE and luraph.detect(content):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                input_path = Path(tmpdir) / "input.lua"
-                output_path = Path(tmpdir) / "output"
-                input_path.write_text(content, encoding="utf-8")
-                try:
-                    pipeline = run_full_loader(
-                        input_path,
-                        output_path,
-                        runtime="lune",
-                        timeout=180,
-                        force=True,
-                        progress=lambda msg: None
-                    )
-                    # Read the decompiled source
-                    decompiled_file = output_path / pipeline["decompiler"]["file"]
-                    if decompiled_file.exists():
-                        result = decompiled_file.read_text(encoding="utf-8")
-                        report = {
-                            "obfuscator": {"name": "Luraph Devirtualiser", "confidence": 100},
-                            "steps": [f"• Pipeline completed in {pipeline['elapsed_seconds']}s"],
-                            "layers_reached": 1,
-                            "max_layers": 1,
-                            "anti_found": [],
-                            "status": "Fully unpacked",
-                            "result": result,
-                            "snippets": []
-                        }
-                        emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-                        await proc.delete()
-                        if file:
-                            await ctx.reply(embed=emb, file=file, mention_author=True)
-                        else:
-                            await ctx.reply(embed=emb, mention_author=True)
-                        if logs_col is not None:
-                            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "LuraphDevirtualiser", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-                        return
-                except Exception as e:
-                    # Pipeline failed, fall through
-                    pass
-
-        # Fallback to auto-deobfuscator
-        deobfuscator = AutoDeobfuscator(verbose=False)
-        result, layers = deobfuscator.deobfuscate(content)
-
-        if result and len(result) > 10:
-            report = {
-                "obfuscator": {"name": "Auto Deobfuscator", "confidence": 100},
-                "steps": [f"• Decoded {layers} layer(s) using auto-detection"],
-                "layers_reached": layers,
-                "max_layers": 8,
-                "anti_found": [],
-                "status": "Fully unpacked" if layers > 1 else "Raw source",
-                "result": result,
-                "snippets": []
-            }
-            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-            await proc.delete()
-            if file:
-                await ctx.reply(embed=emb, file=file, mention_author=True)
-            else:
-                await ctx.reply(embed=emb, mention_author=True)
-            if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "AutoDeobfuscator", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-            return
-        else:
-            await proc.edit(content=f"🔓 Auto-deobfuscator couldn't decode, trying fallback methods {ctx.author.mention}...")
-            success, result = await deobfuscate_prometheus_lua(content)
-            if success:
-                report = {
-                    "obfuscator": {"name": "Prometheus", "confidence": 100},
-                    "steps": ["• Deobfuscated using Prometheus Lua function"],
-                    "layers_reached": 1,
-                    "max_layers": 1,
-                    "anti_found": [],
-                    "status": "Fully unpacked",
-                    "result": result,
-                    "snippets": []
-                }
-                emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-                await proc.delete()
-                if file:
-                    await ctx.reply(embed=emb, file=file, mention_author=True)
-                else:
-                    await ctx.reply(embed=emb, mention_author=True)
-                if logs_col is not None:
-                    await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "Prometheus", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-                return
-
-            success, result = deobfuscate_wearedevs(content)
-            if success:
-                report = {
-                    "obfuscator": {"name": "WeAreDevs", "confidence": 100},
-                    "steps": ["• Deobfuscated using WeAreDevs pattern"],
-                    "layers_reached": 1,
-                    "max_layers": 1,
-                    "anti_found": [],
-                    "status": "Fully unpacked",
-                    "result": result,
-                    "snippets": []
-                }
-                emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-                await proc.delete()
-                if file:
-                    await ctx.reply(embed=emb, file=file, mention_author=True)
-                else:
-                    await ctx.reply(embed=emb, mention_author=True)
-                if logs_col is not None:
-                    await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": "WeAreDevs", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-                return
-
-            timeout = 180 if len(content) > 500000 else 60
-            dec = await asyncio.wait_for(
-                asyncio.to_thread(deobfuscate_code, content),
-                timeout=timeout
-            )
-
-            obfuscator_name = ", ".join(dec["detected"]) if dec["detected"] else "Standard Lua / No Obfuscation"
-            confidence = 100 if dec["detected"] else 100
-            max_layers = 8
-            report = {
-                "obfuscator": {"name": obfuscator_name, "confidence": confidence},
-                "steps": [f"• {s}" for s in dec["steps"]],
-                "layers_reached": dec["layers_done"],
-                "max_layers": max_layers,
-                "anti_found": [f"• {a}" for a in dec["anti_found"]],
-                "status": dec["status"],
-                "result": dec["result"],
-                "snippets": dec["snippets"]
-            }
-            emb, file = make_result_embed(ctx, "🔓 Deobfuscation Result", deobf=report)
-            await proc.delete()
-            if file:
-                await ctx.reply(embed=emb, file=file, mention_author=True)
-            else:
-                await ctx.reply(embed=emb, mention_author=True)
-            if logs_col is not None:
-                await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "deobf", "obf": obfuscator_name, "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-    except asyncio.TimeoutError:
-        try: await proc.delete()
-        except: pass
-        await ctx.reply(embed=discord.Embed(title="⏱️ Timeout", color=0xe74c3c, description=f"{ctx.author.mention}\nDeobfuscation took too long. Try a smaller file."), mention_author=True)
-    except Exception as e:
-        try: await proc.delete()
-        except: pass
-        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
-        print(f"Deobf error: {e}")
-
-@bot.command(name="get")
-async def fetch_command(ctx, *, link=None):
-    await delete_cmds_only(ctx)
-    if not link and ctx.message.reference:
-        try:
-            ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-            m = re.search(r'https?://[^\s<>]+', ref.content)
-            if m: link = m.group(0)
-        except: pass
-    if not link:
-        emb = discord.Embed(title="⚠️ Missing Link", color=0xf39c12, description=f"{ctx.author.mention}\nExample: `.get https://example.com/file.lua`")
-        return await ctx.reply(embed=emb, mention_author=True)
-    proc = await ctx.reply(f"📄 Fetching & decoding {ctx.author.mention}...", mention_author=True)
-    try:
-        ok, cont, msg = await fetch_content(link)
-        if not ok:
-            await proc.delete()
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-        emb, file = make_result_embed(ctx, "📄 Raw Source Code", raw=cont)
-        await proc.delete()
-        if file: await ctx.reply(embed=emb, file=file, mention_author=True)
-        else: await ctx.reply(embed=emb, mention_author=True)
-        if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "fetch", "url": extract_url(link), "at": discord.utils.utcnow()})
-    except Exception as e:
-        await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
-
-@bot.command(name="env")
-async def env_command(ctx, *, link=None):
-    await delete_cmds_only(ctx)
-    if not link:
-        content = await extract_code(ctx)
-    else:
-        ok, content, msg = await fetch_content(link)
-        if not ok:
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-    if not content:
-        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
-        return await ctx.reply(embed=emb, mention_author=True)
-
-    proc = await ctx.reply(f"🛡️ Bypassing anti-env checks {ctx.author.mention}...", mention_author=True)
-    try:
-        dumper = EnvBypassDumper()
-        bypass_result = dumper.full_bypass(content)
-        patched_code = bypass_result["patched_code"]
-        bypassed = bypass_result["bypassed_count"]
-        snippets = dumper.removed_snippets[:10]
-
-        if not patched_code:
-            patched_code = "-- Bypass resulted in empty script, original code may be fully anti-tamper"
-
-        env_report = {
-            "patched_code": patched_code,
-            "bypassed_count": bypassed,
-            "snippets": snippets
-        }
-        emb, file = make_result_embed(ctx, "🛡️ Anti-env Bypass Complete", env_bypass=env_report)
-        await proc.delete()
-        if file:
-            await ctx.reply(embed=emb, file=file, mention_author=True)
-        else:
-            await ctx.reply(embed=emb, mention_author=True)
-        if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "envbypass", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-    except Exception as e:
-        await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
-        print(f"Env error: {e}")
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
@@ -2804,7 +1743,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | .level/.lvl"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | /auto_delete* | .level/.lvl"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
