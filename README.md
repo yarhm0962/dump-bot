@@ -1,21 +1,21 @@
 # RblXLua Bot
 
-A feature-rich Discord bot for Lua obfuscation, server management (tickets, verification, leveling), automated moderation, and script searching.
+A feature-rich Discord bot for Lua deobfuscation, obfuscation, script searching, ticket management, verification, active checks, auto-delete, and administrative utilities.
 
 ---
 
 ## Features
 
+- **Lua Deobfuscation** – Fetch code from a link, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays preview and optionally sends file.
 - **Lua Obfuscation** – Obfuscate Lua source code with a stable Prometheus-style single-base64 chunk.
-- **Level System** – Award XP for chatting, assign roles at each level (1–10), and announce level-ups.
-- **Ticket System** – Create persistent ticket panels with custom roles, claim functionality, and closing.
-- **Verification System** – Automatically restrict server access until users verify via a button.
-- **Active Checker** – Periodically ping `@everyone` in a specified channel to check user activity.
+- **Script Search** – Search the web for a script by name; finds scripts from Pastebin, GitHub, Rentry, Controlc, Hastebin, and many other hosting sites, including game‑specific queries (e.g., Blox Fruit, Murder Mystery 2).
+- **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
+- **Verification System** – Restrict server access until users verify via a button; automatically sets up permissions and a "Not Verified" role.
+- **Active Checker** – Periodically ping @everyone in a specified channel to check user activity.
 - **Auto-Delete Messages** – Instantly delete all messages in chosen channels.
-- **Script Search** – Search the web for a script and retrieve its loadstring and source URL.
-- **Slash & Prefix Commands** – Mix of modern slash commands and traditional prefix commands (`.`).
+- **Bypass Utility** – Extract keys from obfuscated URLs (Delta‑style).
+- **Slash & Prefix Commands** – Modern slash commands and traditional prefix commands (`.`).
 - **Command Channel Restriction** – Limit commands to a single text channel (with owner bypass).
-- **Bypass Utility** – Extract keys from obfuscated URLs (Delta-like).
 - **MongoDB Persistence** – All settings and logs are stored in MongoDB.
 
 ---
@@ -26,12 +26,13 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 
 | Command | Description |
 |---------|-------------|
-| `.obf` | Obfuscate Lua code using Prometheus. Attach a file, paste code, or reply to a message. |
-| `.level` or `.lvl` | Show your current level, XP, and progress. |
+| `.get` | Fetch and deobfuscate code from a URL, attachment, or reply. Displays cleaned code with preview/file. |
+| `.obf` | Obfuscate Lua code using Prometheus (single base64 chunk). Accepts link, attachment, or pasted code. |
+| `.request <query>` | Search the web for a script matching the query. Returns the loadstring and source URL. |
 | `.cmds` | Show this help menu (paginated). |
 | `.db status` | Check MongoDB connection status. |
 | `.db clear` | (Owner only) Clear all stored data. |
-| `.request <query>` | Search the web for a script and return its loadstring and source URL. |
+| `.ping` | Check bot latency (prefix version). |
 
 ### Slash Commands (`/`)
 
@@ -43,12 +44,11 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 | `/channel_clear` | Remove the channel restriction. | Administrator |
 | `/ticket` | Create a ticket panel with custom roles, claim button, embed color, etc. | Administrator |
 | `/verify_system` | Set up the verification system (creates "Not Verified" role, applies perms). | Administrator |
-| `/level_up_system` | Configure level roles (1–10), announcement channel, enable/disable. | Administrator |
-| `/active_checker` | Set up a periodic `@everyone` ping in a channel. | Administrator |
-| `/bypass` | Extract a key from a URL (Delta-style bypass). | None |
-| `/auto_delete_messages` | Add a text channel to auto-delete all new messages. | Administrator |
-| `/atd_view_channel` | View all channels currently set for auto-deletion. | None |
-| `/atd_remove_channel` | Remove a channel from auto-deletion. | Administrator |
+| `/active_checker` | Set up a periodic @everyone ping in a channel. | Administrator |
+| `/bypass` | Extract a key from a URL (Delta‑style bypass). | None |
+| `/auto_delete_messages` | Add a text channel to auto‑delete all new messages. | Administrator |
+| `/atd_view_channel` | View all channels currently set for auto‑deletion. | None |
+| `/atd_remove_channel` | Remove a channel from auto‑deletion. | Administrator |
 
 ---
 
@@ -57,9 +57,10 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 ### 1. Prerequisites
 
 - Python 3.9 or higher
-- A MongoDB database (Atlas or self-hosted)
+- A MongoDB database (Atlas or self‑hosted)
 - A Discord Bot Token
 - BeautifulSoup and lxml for web searching (`pip install beautifulsoup4 lxml`)
+- (Optional) Lua interpreter if you intend to use the Prometheus deobfuscation engine that calls Lua (the bot will fall back to other methods if not available).
 
 ### 2. Environment Variables
 
@@ -94,6 +95,7 @@ discord.py
 aiohttp
 pymongo
 requests
+flask
 beautifulsoup4
 lxml
 ```
@@ -101,7 +103,7 @@ lxml
 ### 4. Running the Bot
 
 ```bash
-python bot.py
+python main.py
 ```
 
 The bot will start a Flask web server on port 10000 (for health checks) and the Discord client.
@@ -110,11 +112,11 @@ The bot will start a Flask web server on port 10000 (for health checks) and the 
 
 ## Permissions Required
 
-- **Manage Roles** – For level system, verification, and ticket role assignments.
-- **Manage Channels** – For ticket creation, verification channel permission overrides.
+- **Manage Roles** – For verification and ticket role assignments.
+- **Manage Channels** – For ticket creation and verification channel permission overrides.
 - **View Channel / Send Messages** – To function in designated channels.
 - **Read Message History** – For ticket and verification message updates.
-- **Manage Messages** – For auto-delete functionality (it deletes messages).
+- **Manage Messages** – For auto‑delete functionality (it deletes messages).
 - **Administrator** – For setup commands (recommended for ease).
 
 ---
@@ -124,23 +126,20 @@ The bot will start a Flask web server on port 10000 (for health checks) and the 
 The bot uses the following MongoDB collections:
 
 - `settings` – Command channel restriction.
-- `usage_logs` – Logs of `.obf`, `.level`, etc. (for audit).
+- `usage_logs` – Logs of `.get`, `.obf`, `.request`, etc. (for audit).
 - `tickets` – Open/closed ticket data.
 - `ticket_panels` – Configuration for each ticket panel.
 - `verification_config` – Verification role and channel settings.
-- `level_config` – Per-guild level system settings (levels, roles, enabled).
-- `user_xp` – XP and level for each user per guild.
 - `active_checker_config` – Active checker interval and channel.
-- `auto_delete_config` – List of channel IDs for auto-deletion.
+- `auto_delete_config` – List of channel IDs for auto‑deletion.
 
 ---
 
 ## Customization
 
-- **Level XP Requirements** – Modify the `XP_PER_LEVEL` dictionary in the source code.
-- **Level-Up Embeds** – Customize the `get_level_up_embed` function.
-- **Auto-Delete** – The bot deletes messages immediately; you can add a delay by modifying the `on_message` event.
-- **Script Search** – Adjust the search logic or add more sources in the `search_web` and `find_script_from_search` functions.
+- **Script Search** – Adjust the `script_sites` list or `search_terms` in the `search_web` function to add/remove sources.
+- **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
+- **Auto‑Delete** – The bot deletes messages immediately; you can add a delay by modifying the `on_message` event.
 
 ---
 
@@ -152,4 +151,4 @@ For issues or feature requests, please open an issue on the GitHub repository or
 
 ## License
 
-This project is provided as-is. Use at your own risk.
+This project is provided as‑is. Use at your own risk.
