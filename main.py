@@ -1639,15 +1639,34 @@ end)(...)'''
     except Exception as e:
         return False, str(e)
 
-# Improved search functions
 async def search_web(query: str) -> list:
     results = []
+    script_sites = [
+        "pastebin.com",
+        "github.com",
+        "rentry.co",
+        "controlc.com",
+        "hastebin.com",
+        "pastebin.pl",
+        "justpaste.it",
+        "textbin.net",
+        "0x0.st",
+        "privatebin.net"
+    ]
     search_engines = [
         f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.com ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:github.com ' + query)}"
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:github.com ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:rentry.co ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:controlc.com ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:hastebin.com ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.pl ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:justpaste.it ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:textbin.net ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:0x0.st ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:privatebin.net ' + query)}"
     ]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
         for search_url in search_engines:
             try:
@@ -1663,34 +1682,33 @@ async def search_web(query: str) -> list:
                         title = a.text.strip()
                         if href and title and href not in [r[1] for r in results]:
                             results.append((title, href))
-                    # Also try to get raw pastebin links if they appear as result__url
                     for url_elem in soup.select(".result__url"):
                         href = url_elem.text.strip()
-                        if href and "pastebin.com" in href and href.startswith("http"):
-                            results.append(("Pastebin", href))
+                        if href and any(site in href for site in script_sites) and href.startswith("http"):
+                            results.append(("Script", href))
+                await asyncio.sleep(0.5)
             except:
                 continue
-    # Remove duplicates
     seen = set()
     unique_results = []
     for title, url in results:
         if url not in seen:
             seen.add(url)
             unique_results.append((title, url))
-    return unique_results[:10]
+    return unique_results[:15]
 
 async def find_script_from_search(query: str) -> tuple:
     results = await search_web(query)
     if not results:
         return None, None, "No results found."
 
+    lua_indicators = ["loadstring", "local function", "function", "print", "game:", "script", "wait(", "task.wait", "require(", "getfenv", "setfenv"]
     for title, url in results:
         try:
             ok, content, _ = await fetch_content(url)
             if ok and content and len(content) > 100:
-                # Check if it looks like Lua code
-                lua_indicators = ["loadstring", "local function", "function", "print", "game:", "script", "wait(", "task.wait"]
-                if any(indicator in content.lower() for indicator in lua_indicators):
+                lower = content.lower()
+                if any(indicator in lower for indicator in lua_indicators):
                     return title, url, content
         except:
             continue
