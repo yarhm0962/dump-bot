@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request, jsonify
 app = Flask(__name__)
 @app.route('/')
 def home(): return "✅ RblXLua Service Running"
@@ -44,6 +44,16 @@ if not TOKEN:
 MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
     print("❌ MONGODB_URI missing")
+    exit(1)
+
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
+if not TURNSTILE_SECRET_KEY:
+    print("❌ TURNSTILE_SECRET_KEY missing")
+    exit(1)
+
+GUILD_ID = int(os.getenv("GUILD_ID", 0))
+if not GUILD_ID:
+    print("❌ GUILD_ID missing or invalid")
     exit(1)
 
 OWNER_ID = 1445289457866506290
@@ -632,7 +642,6 @@ class VerifyView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
-# ---------- Verification Deadline Logic ----------
 async def apply_not_verified_to_all(guild_id, not_verified_role_id):
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -1074,7 +1083,7 @@ class CmdsPaginationView(discord.ui.View):
 
 @bot.command(name="cmds")
 async def show_commands(ctx):
-    await delete_cmds_only(ctx)  # deletes the invoking message (optional)
+    await delete_cmds_only(ctx)
     pages = [
         {
             "title": "RblXLua Bot Commands (1/2)",
@@ -1099,7 +1108,6 @@ async def show_commands(ctx):
     view = CmdsPaginationView(pages, ctx.author.id)
     embed = view.get_embed()
     try:
-        # Use ctx.send instead of ctx.reply because the original message is deleted.
         await ctx.send(embed=embed, view=view, mention_author=True)
     except discord.HTTPException as e:
         print(f"Failed to send .cmds embed: {e}")
@@ -1173,6 +1181,76 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
 
+# ---------------- Flask API for Verification ----------------
+@app.route('/api/verify', methods=['POST'])
+def api_verify():
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'message': 'Missing JSON body'}), 400
+
+    user_id = data.get('user_id')
+    cf_token = data.get('cf_token')
+
+    if not user_id:
+        return jsonify({'success': False, 'message': 'Missing user_id'}), 400
+    if not cf_token:
+        return jsonify({'success': False, 'message': 'Missing cf_token'}), 400
+
+    # Validate Turnstile token
+    async def validate_turnstile():
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                'secret': TURNSTILE_SECRET_KEY,
+                'response': cf_token
+            }
+            async with session.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data=payload) as resp:
+                result = await resp.json()
+                return result.get('success', False)
+
+    success = asyncio.run(validate_turnstile())
+    if not success:
+        return jsonify({'success': False, 'message': 'Turnstile challenge failed'}), 400
+
+    # Now assign the Verified role in the guild
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return jsonify({'success': False, 'message': 'Guild not found'}), 500
+
+    # Get verification config for this guild
+    config = asyncio.run(asyncio.to_thread(verification_config_col.find_one, {'guild_id': GUILD_ID}))
+    if not config:
+        return jsonify({'success': False, 'message': 'Verification system not set up for this guild'}), 400
+
+    not_verified_role_id = config['not_verified_role_id']
+    verified_role_id = config['verified_role_id']
+
+    not_verified_role = guild.get_role(not_verified_role_id)
+    verified_role = guild.get_role(verified_role_id)
+
+    if not not_verified_role or not verified_role:
+        return jsonify({'success': False, 'message': 'Roles are missing'}), 500
+
+    # Get member
+    member = guild.get_member(int(user_id))
+    if not member:
+        return jsonify({'success': False, 'message': 'User not found in the server'}), 404
+
+    # Check if already verified
+    if verified_role in member.roles:
+        return jsonify({'success': False, 'message': 'User is already verified'}), 400
+
+    # If user doesn't have Not Verified role, they might have been verified through other means, but we'll assign anyway
+    # Add Verified role and remove Not Verified
+    try:
+        asyncio.run_coroutine_threadsafe(member.add_roles(verified_role, reason='Verified via website'), bot.loop)
+        if not_verified_role in member.roles:
+            asyncio.run_coroutine_threadsafe(member.remove_roles(not_verified_role, reason='Verified via website'), bot.loop)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to assign role: {str(e)}'}), 500
+
+    return jsonify({'success': True, 'message': 'You are verified!'})
+
+# ---------- Existing helper functions ----------
 def decode_all_escapes(s: str) -> str:
     try:
         s = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1),16)), s)
@@ -1268,7 +1346,6 @@ end)(...)'''
     except Exception as e:
         return False, str(e)
 
-# ---------- Deobfuscation Engine ----------
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
     local load = loadstring or load
@@ -1574,7 +1651,6 @@ def make_result_embed(ctx, title: str, deobf: dict=None, raw: str=None):
     emb.set_footer(text=f"Requested by {ctx.author}")
     return emb, file
 
-# ---------- .get command ----------
 @bot.command(name="get")
 async def get_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
