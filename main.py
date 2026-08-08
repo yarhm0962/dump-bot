@@ -55,8 +55,6 @@ logs_col = None
 tickets_col = None
 ticket_panels_col = None
 verification_config_col = None
-level_config_col = None
-user_xp_col = None
 active_checker_col = None
 auto_delete_config_col = None
 
@@ -69,8 +67,6 @@ try:
     tickets_col = db["tickets"]
     ticket_panels_col = db["ticket_panels"]
     verification_config_col = db["verification_config"]
-    level_config_col = db["level_config"]
-    user_xp_col = db["user_xp"]
     active_checker_col = db["active_checker_config"]
     auto_delete_config_col = db["auto_delete_config"]
     print("✅ MongoDB Connected")
@@ -81,11 +77,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
-
-XP_PER_LEVEL = {
-    1: 20, 2: 50, 3: 100, 4: 150, 5: 200,
-    6: 250, 7: 300, 8: 350, 9: 400, 10: 500
-}
 
 async def get_allowed_channel():
     if settings_col is None:
@@ -102,323 +93,6 @@ async def set_allowed_channel(channel_id):
 async def clear_allowed_channel():
     if settings_col is not None:
         await asyncio.to_thread(settings_col.delete_one, {"key": "command_channel"})
-
-async def get_level_config(guild_id):
-    if level_config_col is None:
-        return None
-    return await asyncio.to_thread(level_config_col.find_one, {"guild_id": guild_id})
-
-async def set_level_config(guild_id, channel_id, level_roles, enabled=True):
-    if level_config_col is not None:
-        await asyncio.to_thread(level_config_col.update_one,
-            {"guild_id": guild_id},
-            {"$set": {"channel_id": channel_id, "level_roles": level_roles, "enabled": enabled}},
-            upsert=True
-        )
-
-async def update_level_enabled(guild_id, enabled):
-    if level_config_col is not None:
-        await asyncio.to_thread(level_config_col.update_one,
-            {"guild_id": guild_id},
-            {"$set": {"enabled": enabled}},
-            upsert=True
-        )
-
-async def get_user_xp(guild_id, user_id):
-    if user_xp_col is None:
-        return {"xp": 0, "level": 0}
-    doc = await asyncio.to_thread(user_xp_col.find_one, {"guild_id": guild_id, "user_id": user_id})
-    if not doc:
-        return {"xp": 0, "level": 0}
-    return {"xp": doc.get("xp", 0), "level": doc.get("level", 0)}
-
-async def set_user_xp(guild_id, user_id, xp, level):
-    if user_xp_col is not None:
-        await asyncio.to_thread(user_xp_col.update_one,
-            {"guild_id": guild_id, "user_id": user_id},
-            {"$set": {"xp": xp, "level": level}},
-            upsert=True
-        )
-
-async def get_max_level(guild_id):
-    config = await get_level_config(guild_id)
-    if not config:
-        return 0
-    level_roles = config.get("level_roles", {})
-    max_lv = 0
-    for key in level_roles.keys():
-        if key.isdigit():
-            lv = int(key)
-            if lv > max_lv:
-                max_lv = lv
-    return max_lv
-
-def get_required_xp(level):
-    return XP_PER_LEVEL.get(level, 500)
-
-def get_level_up_embed(user, level, guild, roles_added=None):
-    if level == 1:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 1**!"
-        footer = "Keep chatting to level up further!"
-    elif level == 2:
-        color = 0x00bfff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 2**!\nYou're getting the hang of it!"
-        footer = "Next level requires 50 XP"
-    elif level == 3:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 3**!\nYou're on fire!"
-        footer = "Next level requires 100 XP"
-    elif level == 4:
-        color = 0x4169e1
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 4**!\nAmazing progress!"
-        footer = "Next level requires 150 XP"
-    elif level == 5:
-        color = 0x6a5acd
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 5**!\nYou're a legend!"
-        footer = "Next level requires 200 XP"
-    elif level == 6:
-        color = 0x8a2be2
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 6**!\nIncredible!"
-        footer = "Next level requires 250 XP"
-    elif level == 7:
-        color = 0x9400d3
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 7**!\nYou're unstoppable!"
-        footer = "Next level requires 300 XP"
-    elif level == 8:
-        color = 0x9932cc
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 8**!\nPhenomenal!"
-        footer = "Next level requires 350 XP"
-    elif level == 9:
-        color = 0xba55d3
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level 9**!\nAlmost at the top!"
-        footer = "Next level requires 400 XP"
-    elif level == 10:
-        color = 0xff69b4
-        title = "🌟 LEVEL MAX! 🌟"
-        desc = f"{user.mention} has reached the **MAX LEVEL 10**!\nYou are the ultimate champion!"
-        footer = "You've mastered the level system!"
-    else:
-        color = 0x1e90ff
-        title = "🌟 Level Up!"
-        desc = f"{user.mention} has reached **Level {level}**!"
-        footer = "Keep going!"
-
-    embed = discord.Embed(title=title, description=desc, color=color)
-    embed.set_thumbnail(url=user.display_avatar.url)
-    if roles_added:
-        role_mentions = " ".join([f"<@&{rid}>" for rid in roles_added])
-        embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
-    embed.set_footer(text=footer)
-    return embed
-
-async def apply_roles_to_all_members(guild):
-    if not guild.me.guild_permissions.manage_roles:
-        return
-    config = await get_level_config(guild.id)
-    if not config:
-        return
-    level_roles = config.get("level_roles", {})
-    if not level_roles:
-        return
-    async for member in guild.fetch_members(limit=None):
-        if member.bot:
-            continue
-        data = await get_user_xp(guild.id, member.id)
-        level = data["level"]
-        if level == 0:
-            continue
-        target_role_ids = level_roles.get(str(level), [])
-        target_roles = [guild.get_role(rid) for rid in target_role_ids if guild.get_role(rid)]
-        current_roles = member.roles
-        to_remove = []
-        for lv, rids in level_roles.items():
-            if lv == "_channel":
-                continue
-            if int(lv) != level:
-                for rid in rids:
-                    role = guild.get_role(rid)
-                    if role and role in current_roles:
-                        to_remove.append(role)
-        to_add = [r for r in target_roles if r not in current_roles]
-        changes = []
-        if to_remove:
-            changes.append(member.remove_roles(*to_remove, reason="Sync level roles"))
-        if to_add:
-            changes.append(member.add_roles(*to_add, reason="Sync level roles"))
-        if changes:
-            try:
-                await asyncio.gather(*changes)
-            except discord.Forbidden:
-                pass
-            await asyncio.sleep(0.3)
-
-class LevelConfigView(discord.ui.View):
-    def __init__(self, guild, level, channel_id, interaction, is_update=False, enabled=True):
-        super().__init__(timeout=60)
-        self.guild = guild
-        self.level = level
-        self.channel_id = channel_id
-        self.is_update = is_update
-        self.enabled = enabled
-        self.interaction = interaction
-
-        roles = [r for r in guild.roles if r.name != "@everyone"]
-        roles.sort(key=lambda r: r.position, reverse=True)
-
-        if len(roles) > 25:
-            roles = roles[:25]
-            self.add_item(discord.ui.Button(label="Too many roles, only first 25 shown", disabled=True))
-
-        options = []
-        for r in roles:
-            options.append(discord.SelectOption(
-                label=r.name,
-                value=str(r.id),
-                description=f"ID: {r.id}",
-                emoji=None
-            ))
-
-        select = discord.ui.Select(
-            placeholder=f"Select exactly {level} role(s) for Level {level}. Previous level roles will be removed on level up.",
-            min_values=level,
-            max_values=level,
-            options=options,
-            custom_id="level_role_select"
-        )
-        select.callback = self.select_callback
-        self.add_item(select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        if interaction.user != interaction.message.interaction.user:
-            await interaction.response.send_message("You are not the one who ran the command.", ephemeral=True)
-            return
-
-        selected_role_ids = [int(value) for value in interaction.data["values"]]
-        config = await get_level_config(self.guild.id)
-        if config:
-            level_roles = config.get("level_roles", {})
-            enabled = config.get("enabled", True)
-        else:
-            level_roles = {}
-            enabled = self.enabled
-        level_roles[str(self.level)] = selected_role_ids
-        await set_level_config(self.guild.id, self.channel_id, level_roles, enabled)
-
-        await apply_roles_to_all_members(self.guild)
-
-        action = "updated" if self.is_update else "saved"
-        embed = discord.Embed(
-            title=f"✅ Level Configuration {action.capitalize()}",
-            description=f"Level **{self.level}** will now assign the following roles:\n" +
-                        "\n".join([f"<@&{rid}>" for rid in selected_role_ids]),
-            color=0x1e90ff
-        )
-        embed.set_footer(text="Roles have been applied to all users based on their current level.")
-        await interaction.response.edit_message(embed=embed, view=None)
-        self.stop()
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        try:
-            await self.interaction.edit_original_response(view=self)
-            await self.interaction.followup.send(
-                "❌ Your command is Expired you need to use a `/level_up_system` command again.",
-                ephemeral=True
-            )
-        except:
-            pass
-
-@bot.tree.command(name="level_up_system", description="Configure the level-up system")
-@app_commands.describe(
-    level="The level number (1-10) to configure",
-    select_channel="The channel where level-up announcements will be sent",
-    enabled="Enable or disable the level system (optional, True/False)",
-    update="Update an existing configuration (optional, True/False)"
-)
-@app_commands.choices(enabled=[
-    app_commands.Choice(name="True", value="True"),
-    app_commands.Choice(name="False", value="False")
-])
-@app_commands.choices(update=[
-    app_commands.Choice(name="True", value="True"),
-    app_commands.Choice(name="False", value="False")
-])
-@app_commands.default_permissions(administrator=True)
-async def level_up_system(
-    interaction: discord.Interaction,
-    level: int,
-    select_channel: discord.TextChannel,
-    enabled: app_commands.Choice[str] = None,
-    update: app_commands.Choice[str] = None
-):
-    if level < 1 or level > 10:
-        await interaction.response.send_message("Level must be between 1 and 10.", ephemeral=True)
-        return
-
-    if not interaction.guild.me.guild_permissions.manage_roles:
-        await interaction.response.send_message("I need the 'Manage Roles' permission to assign roles.", ephemeral=True)
-        return
-
-    config = await get_level_config(interaction.guild.id)
-
-    if enabled is not None:
-        new_status = True if enabled.value == "True" else False
-        await update_level_enabled(interaction.guild.id, new_status)
-        status_text = "enabled" if new_status else "disabled"
-        embed = discord.Embed(
-            title="✅ Level System Updated",
-            description=f"The level system has been **{status_text}**.",
-            color=0x1e90ff
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-
-    has_roles = False
-    if config:
-        level_roles = config.get("level_roles", {})
-        for key in level_roles:
-            if key != "_channel":
-                has_roles = True
-                break
-
-    if config and has_roles:
-        if update is not None and update.value == "True":
-            view = LevelConfigView(interaction.guild, level, select_channel.id, interaction, is_update=True, enabled=config.get("enabled", True))
-            embed = discord.Embed(
-                title="🎛️ Level Role Update",
-                description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
-                color=0x1e90ff
-            )
-            embed.set_footer(text="You have 1 minute to choose roles.")
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            return
-        else:
-            await interaction.response.send_message(
-                "❌ Your Level System is already set on this Server!\n"
-                "Use `/level_up_system` with `update: True` to modify existing configuration, or `enabled: True/False` to toggle the system.",
-                ephemeral=True
-            )
-            return
-
-    view = LevelConfigView(interaction.guild, level, select_channel.id, interaction, is_update=False, enabled=True)
-    embed = discord.Embed(
-        title="🎛️ Level Role Configuration",
-        description=f"Select exactly **{level}** role(s) to assign when a user reaches Level {level}.\n\n**Note:** When a user levels up, roles from all previous levels will be automatically removed.",
-        color=0x1e90ff
-    )
-    embed.set_footer(text="You have 1 minute to choose roles.")
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
 async def on_message(message):
@@ -438,182 +112,6 @@ async def on_message(message):
 
     if message.content.startswith("."):
         await bot.process_commands(message)
-        return
-
-    config = await get_level_config(message.guild.id)
-    if not config or not config.get("enabled", True):
-        await bot.process_commands(message)
-        return
-
-    guild = message.guild
-    user = message.author
-
-    data = await get_user_xp(guild.id, user.id)
-    current_level = data["level"]
-    max_lv = await get_max_level(guild.id)
-
-    if current_level >= max_lv and max_lv > 0:
-        await bot.process_commands(message)
-        return
-
-    current_xp = data["xp"]
-    current_xp += 1
-    next_level = current_level + 1
-
-    if next_level <= max_lv and current_xp >= get_required_xp(next_level):
-        new_level = next_level
-        current_xp = 0
-        await set_user_xp(guild.id, user.id, current_xp, new_level)
-
-        level_roles = config.get("level_roles", {})
-        roles_to_remove = []
-        for lv in range(1, new_level):
-            role_ids = level_roles.get(str(lv), [])
-            for rid in role_ids:
-                role = guild.get_role(rid)
-                if role and role in user.roles:
-                    roles_to_remove.append(role)
-        if roles_to_remove:
-            try:
-                await user.remove_roles(*roles_to_remove, reason=f"Leveled up to Level {new_level}")
-            except discord.Forbidden:
-                pass
-
-        role_ids = level_roles.get(str(new_level), [])
-        roles_to_add = [guild.get_role(rid) for rid in role_ids if guild.get_role(rid)]
-        if roles_to_add:
-            try:
-                await user.add_roles(*roles_to_add, reason=f"Reached Level {new_level}")
-            except discord.Forbidden:
-                pass
-        else:
-            roles_to_add = []
-
-        channel_id = config.get("channel_id")
-        if channel_id:
-            channel = guild.get_channel(channel_id)
-            if channel:
-                embed = get_level_up_embed(user, new_level, guild, [r.id for r in roles_to_add])
-                await channel.send(content=user.mention, embed=embed)
-
-        try:
-            dm_embed = discord.Embed(
-                title=f"🌟 Level Up in {guild.name}!",
-                description=f"You've reached **Level {new_level}**!",
-                color=0x1e90ff
-            )
-            dm_embed.set_thumbnail(url=user.display_avatar.url)
-            if roles_to_add:
-                role_mentions = " ".join([r.mention for r in roles_to_add])
-                dm_embed.add_field(name="🎖️ Roles Received", value=role_mentions, inline=False)
-            dm_embed.set_footer(text="Keep chatting to level up further!")
-            await user.send(embed=dm_embed)
-        except:
-            pass
-
-    else:
-        await set_user_xp(guild.id, user.id, current_xp, current_level)
-
-    await bot.process_commands(message)
-
-@bot.command(name="level")
-async def level_command(ctx):
-    config = await get_level_config(ctx.guild.id)
-    if not config or not config.get("enabled", True):
-        embed = discord.Embed(
-            title="❌ Level System Not Active",
-            description=(
-                "The Level System is not set up or is currently disabled on this Server.\n"
-                "An administrator should use `/level_up_system` to configure it."
-            ),
-            color=0xe74c3c
-        )
-        await ctx.reply(embed=embed, mention_author=False)
-        return
-
-    data = await get_user_xp(ctx.guild.id, ctx.author.id)
-    level = data["level"]
-    xp = data["xp"]
-    max_lv = await get_max_level(ctx.guild.id)
-
-    if max_lv == 0:
-        await ctx.reply("No levels configured yet.", mention_author=False)
-        return
-
-    if level >= max_lv:
-        embed = discord.Embed(
-            title="📊 Your Level Stats",
-            description=f"{ctx.author.mention}",
-            color=0x1e90ff
-        )
-        embed.add_field(name="Level", value=f"**{level}** (MAX)", inline=True)
-        embed.add_field(name="Total XP", value=f"**{xp}**", inline=True)
-        embed.add_field(name="Required XP", value="**MAX**", inline=True)
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text="You've reached the maximum level!")
-        await ctx.reply(embed=embed, mention_author=False)
-    else:
-        next_level = level + 1
-        required = get_required_xp(next_level)
-        progress = xp / required
-        bar_length = 10
-        filled = int(progress * bar_length)
-        bar = "█" * filled + "░" * (bar_length - filled)
-        embed = discord.Embed(
-            title="📊 Your Level Stats",
-            description=f"{ctx.author.mention}",
-            color=0x1e90ff
-        )
-        embed.add_field(name="Level", value=f"**{level}**", inline=True)
-        embed.add_field(name="XP", value=f"**{xp}** / {required}", inline=True)
-        embed.add_field(name="Progress", value=f"`{bar}` {int(progress*100)}%", inline=False)
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text=f"{xp} XP until Level {next_level}")
-        await ctx.reply(embed=embed, mention_author=False)
-
-@bot.command(name="lvl")
-async def level_shortcut(ctx):
-    await level_command(ctx)
-
-active_checker_tasks = {}
-
-def parse_time_interval(time_str: str) -> int:
-    time_str = time_str.lower().strip()
-    if time_str.endswith("d"):
-        return int(time_str[:-1]) * 86400
-    elif time_str.endswith("week"):
-        return int(time_str[:-4]) * 604800
-    elif time_str.endswith("month"):
-        return int(time_str[:-5]) * 2592000
-    elif time_str.endswith("year"):
-        return int(time_str[:-4]) * 31536000
-    else:
-        raise ValueError("Invalid time format. Use e.g., 1d, 1week, 1month, 1year")
-
-async def active_checker_loop(guild_id, channel_id, interval_seconds):
-    await bot.wait_until_ready()
-    await asyncio.sleep(interval_seconds)
-    while not bot.is_closed():
-        try:
-            guild = bot.get_guild(guild_id)
-            if not guild:
-                break
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                break
-
-            embed = discord.Embed(
-                title="🟢 Active Check",
-                description="Active check. I just want y'all to check if you are Active. React so we know if y'all is Active.",
-                color=0x1e90ff
-            )
-            embed.set_footer(text="Powered by MonLua Bot")
-            msg = await channel.send(content="@everyone", embed=embed)
-            await msg.add_reaction("✅")
-            await asyncio.sleep(interval_seconds)
-        except Exception as e:
-            print(f"Active checker error: {e}")
-            await asyncio.sleep(60)
 
 @bot.tree.command(name="active_checker", description="Set up an active checker that pings @everyone periodically")
 @app_commands.describe(
@@ -665,6 +163,46 @@ async def active_checker(
         color=0x1e90ff
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+active_checker_tasks = {}
+
+def parse_time_interval(time_str: str) -> int:
+    time_str = time_str.lower().strip()
+    if time_str.endswith("d"):
+        return int(time_str[:-1]) * 86400
+    elif time_str.endswith("week"):
+        return int(time_str[:-4]) * 604800
+    elif time_str.endswith("month"):
+        return int(time_str[:-5]) * 2592000
+    elif time_str.endswith("year"):
+        return int(time_str[:-4]) * 31536000
+    else:
+        raise ValueError("Invalid time format. Use e.g., 1d, 1week, 1month, 1year")
+
+async def active_checker_loop(guild_id, channel_id, interval_seconds):
+    await bot.wait_until_ready()
+    await asyncio.sleep(interval_seconds)
+    while not bot.is_closed():
+        try:
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                break
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                break
+
+            embed = discord.Embed(
+                title="🟢 Active Check",
+                description="Active check. I just want y'all to check if you are Active. React so we know if y'all is Active.",
+                color=0x1e90ff
+            )
+            embed.set_footer(text="Powered by MonLua Bot")
+            msg = await channel.send(content="@everyone", embed=embed)
+            await msg.add_reaction("✅")
+            await asyncio.sleep(interval_seconds)
+        except Exception as e:
+            print(f"Active checker error: {e}")
+            await asyncio.sleep(60)
 
 class PersistentTicketPanel(discord.ui.View):
     def __init__(self, panel_id, button_label="Open Ticket", button_emoji="🎟️", button_style=discord.ButtonStyle.gray):
@@ -1456,7 +994,6 @@ async def show_commands(ctx):
             "description": f"Hello {ctx.author.mention}",
             "fields": [
                 {"name": "`.obf`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
-                {"name": "`.level` / `.lvl`", "value": "Check your current level and XP.", "inline": False},
                 {"name": "`.cmds`", "value": "Show this help menu.", "inline": False},
                 {"name": "`.db`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
                 {"name": "`.request`", "value": "Search the web for a script and return its loadstring and source URL.", "inline": False},
@@ -1467,7 +1004,7 @@ async def show_commands(ctx):
             "title": "RblXLua Tool Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/level_up_system` - Configure level-up system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key\n`/auto_delete_messages` - Add a channel for auto-deletion\n`/atd_view_channel` - View auto-delete channels\n`/atd_remove_channel` - Remove a channel from auto-delete", "inline": False},
+                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key\n`/auto_delete_messages` - Add a channel for auto-deletion\n`/atd_view_channel` - View auto-delete channels\n`/atd_remove_channel` - Remove a channel from auto-delete", "inline": False},
             ]
         }
     ]
@@ -1957,10 +1494,8 @@ async def get_command(ctx, *, link=None):
             if m: link = m.group(0)
         except: pass
     if not link:
-        # Try to extract from attachments or code block
         content = await extract_code(ctx)
         if content:
-            # If we got code, treat it as raw input to deobf
             pass
         else:
             emb = discord.Embed(title="⚠️ Missing Link/Code", color=0xf39c12, description=f"{ctx.author.mention}\nProvide a link, attach a file, or paste code.\nExample: `.get https://example.com/script.lua`")
@@ -1978,14 +1513,12 @@ async def get_command(ctx, *, link=None):
             await proc.delete()
             return await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
     else:
-        # content already extracted from extract_code
         if not content:
             emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nProvide a link, attach a file, or paste code.")
             return await ctx.reply(embed=emb, mention_author=True)
         proc = await ctx.reply(f"🔓 Deobfuscating {ctx.author.mention}...", mention_author=True)
 
     try:
-        # Attempt Prometheus deobfuscation
         success, result = await deobfuscate_prometheus_lua(content)
         if success:
             report = {
@@ -2008,7 +1541,6 @@ async def get_command(ctx, *, link=None):
                 await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "get", "url": extract_url(link if link else ""), "at": discord.utils.utcnow()})
             return
 
-        # Try WeAreDevs
         success, result = deobfuscate_wearedevs(content)
         if success:
             report = {
@@ -2031,7 +1563,6 @@ async def get_command(ctx, *, link=None):
                 await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "get", "url": extract_url(link if link else ""), "at": discord.utils.utcnow()})
             return
 
-        # Enhanced fallback deobfuscator
         timeout = 180 if len(content) > 500000 else 60
         dec = await asyncio.wait_for(
             asyncio.to_thread(deobfuscate_code, content),
@@ -2067,31 +1598,36 @@ async def get_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
-# ---------- .request command (unchanged, but included for completeness) ----------
+# ---------- .request command with improved search ----------
 pending_requests = {}
 
 async def search_web(query: str) -> list:
     results = []
+    # Expanded list of script hosting sites
     script_sites = [
         "pastebin.com", "github.com", "rentry.co", "controlc.com",
         "hastebin.com", "pastebin.pl", "justpaste.it", "textbin.net",
-        "0x0.st", "privatebin.net"
+        "0x0.st", "privatebin.net", "topastebin.com", "snippet.host",
+        "sourceb.in", "dpaste.com", "ideone.com", "repl.it", "codeshare.io"
     ]
-    searches = [
-        f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.com ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:github.com ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:rentry.co ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:controlc.com ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:hastebin.com ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.pl ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:justpaste.it ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:textbin.net ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:0x0.st ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:privatebin.net ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:youtube.com ' + query + ' script')}"
+    # Queries: generic + site-specific for each site, plus common script names
+    search_terms = [
+        query,
+        f"Blox Fruit {query}",
+        f"Murder Mystery 2 {query}",
+        f"{query} script pastebin",
+        f"{query} loadstring",
+        f"{query} lua script"
     ]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+    searches = []
+    for term in search_terms:
+        searches.append(f"https://html.duckduckgo.com/html/?q={quote_plus(term)}")
+        for site in script_sites:
+            searches.append(f"https://html.duckduckgo.com/html/?q={quote_plus('site:' + site + ' ' + term)}")
+    # Remove duplicates
+    searches = list(set(searches))
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
         for search_url in searches:
             try:
@@ -2120,20 +1656,28 @@ async def search_web(query: str) -> list:
         if url not in seen:
             seen.add(url)
             unique_results.append((title, url))
-    return unique_results[:20]
+    return unique_results[:30]
 
 async def find_script_from_search(query: str) -> tuple:
     results = await search_web(query)
     if not results:
         return None, None, "No results found."
 
-    lua_indicators = ["loadstring", "local function", "function", "print", "game:", "script", "wait(", "task.wait", "require(", "getfenv", "setfenv"]
+    # Enhanced Lua detection
+    lua_indicators = [
+        "loadstring", "local function", "function", "print", "game:", "script",
+        "wait(", "task.wait", "require(", "getfenv", "setfenv", "local player",
+        "game.Players", "workspace", "Instance.new", "Vector3", "CFrame",
+        "math.random", "string.char", "table.insert", "pcall", "xpcall"
+    ]
     for title, url in results:
         try:
             ok, content, _ = await fetch_content(url)
             if ok and content and len(content) > 100:
                 lower = content.lower()
-                if any(indicator in lower for indicator in lua_indicators):
+                # Check for at least two Lua indicators to avoid false positives
+                indicator_count = sum(1 for ind in lua_indicators if ind in lower)
+                if indicator_count >= 2:
                     return title, url, content
         except:
             continue
@@ -2149,7 +1693,13 @@ async def request_script(ctx, *, query: str = None):
     now = datetime.utcnow()
     if user_id in pending_requests:
         if (now - pending_requests[user_id]).total_seconds() < 30:
-            await ctx.reply("❌ Please wait I'm still looking for a script that you Requested.", mention_author=False)
+            # Send a temporary message that will delete itself after 5 seconds
+            wait_msg = await ctx.reply("❌ Please wait I'm still looking for a script that you Requested.", mention_author=False)
+            await asyncio.sleep(5)
+            try:
+                await wait_msg.delete()
+            except:
+                pass
             try:
                 await ctx.message.delete()
             except:
@@ -2168,7 +1718,7 @@ async def request_script(ctx, *, query: str = None):
     msg = await ctx.reply(embed=searching_embed, mention_author=False)
 
     try:
-        title, url, content = await asyncio.wait_for(find_script_from_search(query), timeout=20.0)
+        title, url, content = await asyncio.wait_for(find_script_from_search(query), timeout=25.0)
         if not content:
             await msg.edit(embed=discord.Embed(
                 title="❌ Not Found",
@@ -2306,9 +1856,6 @@ async def on_ready():
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
-    for guild in bot.guilds:
-        await apply_roles_to_all_members(guild)
-
     active_configs = await asyncio.to_thread(active_checker_col.find)
     for cfg in active_configs:
         guild_id = cfg["guild_id"]
@@ -2317,7 +1864,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | /auto_delete* | .level/.lvl | .request | .get"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .request | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
