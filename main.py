@@ -640,7 +640,6 @@ async def apply_not_verified_to_all(guild_id, not_verified_role_id):
     role = guild.get_role(not_verified_role_id)
     if not role:
         return
-    # Get verified role from config
     config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": guild_id})
     if not config:
         return
@@ -650,17 +649,15 @@ async def apply_not_verified_to_all(guild_id, not_verified_role_id):
     async for member in guild.fetch_members(limit=None):
         if member.bot:
             continue
-        # If member has verified role, skip
         if verified_role and verified_role in member.roles:
             continue
-        # If they already have not_verified, skip
         if role in member.roles:
             continue
         try:
             await member.add_roles(role, reason="Verification deadline expired")
             count += 1
             if count % 10 == 0:
-                await asyncio.sleep(0.5)  # rate limit
+                await asyncio.sleep(0.5)
         except discord.Forbidden:
             continue
         except Exception as e:
@@ -672,24 +669,20 @@ async def check_verification_deadlines():
     while not bot.is_closed():
         try:
             now = int(time.time())
-            # Find all guilds with a deadline and that are not processed yet (deadline <= now)
             configs = await asyncio.to_thread(verification_config_col.find, {"deadline": {"$lte": now}})
             async for config in configs:
                 guild_id = config["guild_id"]
                 not_verified_role_id = config["not_verified_role_id"]
-                # Check if already processed (to avoid repeated runs)
                 if config.get("deadline_processed", False):
                     continue
                 await apply_not_verified_to_all(guild_id, not_verified_role_id)
-                # Mark as processed
                 await asyncio.to_thread(verification_config_col.update_one,
                     {"guild_id": guild_id},
                     {"$set": {"deadline_processed": True}}
                 )
-            # Also remove expired deadlines that are processed? We'll keep them for audit.
         except Exception as e:
             print(f"Verification deadline check error: {e}")
-        await asyncio.sleep(60)  # check every minute
+        await asyncio.sleep(60)
 
 def parse_duration(duration_str: str) -> int:
     duration_str = duration_str.lower().strip()
@@ -805,7 +798,6 @@ async def verify_system(
     )
     embed.set_footer(text="Verification System")
 
-    # Parse duration if provided
     deadline = None
     deadline_timestamp = None
     if duration:
@@ -1106,8 +1098,12 @@ async def show_commands(ctx):
 
     view = CmdsPaginationView(pages, ctx.author.id)
     embed = view.get_embed()
-    message = await ctx.reply(embed=embed, view=view, mention_author=True)
-    view.message = message
+    try:
+        message = await ctx.reply(embed=embed, view=view, mention_author=True)
+        view.message = message
+    except discord.HTTPException as e:
+        print(f"Failed to send .cmds embed: {e}")
+        await ctx.reply("An error occurred while displaying the help menu.", mention_author=True)
 
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
 @app_commands.describe(channel="The text channel to enable auto-deletion for")
@@ -1784,7 +1780,6 @@ async def on_ready():
                         color=0x1e90ff
                     )
                     new_embed.set_footer(text="Verification System")
-                    # If there is a deadline, add it to the embed
                     if config.get("deadline"):
                         new_embed.add_field(
                             name="⏳ Verification Deadline",
@@ -1805,7 +1800,6 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    # Start the verification deadline checker
     asyncio.create_task(check_verification_deadlines())
 
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
