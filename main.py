@@ -1074,7 +1074,7 @@ class CmdsPaginationView(discord.ui.View):
 
 @bot.command(name="cmds")
 async def show_commands(ctx):
-    await delete_cmds_only(ctx)
+    await delete_cmds_only(ctx)  # deletes the invoking message (optional)
     pages = [
         {
             "title": "RblXLua Bot Commands (1/2)",
@@ -1099,11 +1099,11 @@ async def show_commands(ctx):
     view = CmdsPaginationView(pages, ctx.author.id)
     embed = view.get_embed()
     try:
-        message = await ctx.reply(embed=embed, view=view, mention_author=True)
-        view.message = message
+        # Use ctx.send instead of ctx.reply because the original message is deleted.
+        await ctx.send(embed=embed, view=view, mention_author=True)
     except discord.HTTPException as e:
         print(f"Failed to send .cmds embed: {e}")
-        await ctx.reply("An error occurred while displaying the help menu.", mention_author=True)
+        await ctx.send("An error occurred while displaying the help menu.", mention_author=True)
 
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
 @app_commands.describe(channel="The text channel to enable auto-deletion for")
