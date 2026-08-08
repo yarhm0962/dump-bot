@@ -600,48 +600,6 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
-class VerifyView(discord.ui.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=None)
-        self.guild_id = guild_id
-        button = discord.ui.Button(
-            label="Verify",
-            style=discord.ButtonStyle.green,
-            emoji="👤",
-            custom_id=f"verify_{guild_id}"
-        )
-        button.callback = self.verify_callback
-        self.add_item(button)
-
-    async def verify_callback(self, interaction: discord.Interaction):
-        config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": interaction.guild.id})
-        if not config:
-            await interaction.response.send_message("⚠️ Verification system not configured.", ephemeral=True)
-            return
-
-        not_verified_role_id = config["not_verified_role_id"]
-        verified_role_id = config["verified_role_id"]
-
-        not_verified_role = interaction.guild.get_role(not_verified_role_id)
-        verified_role = interaction.guild.get_role(verified_role_id)
-
-        if not not_verified_role or not verified_role:
-            await interaction.response.send_message("❌ Roles are missing. Contact an admin.", ephemeral=True)
-            return
-
-        if not_verified_role not in interaction.user.roles:
-            await interaction.response.send_message("✅ You are already verified.", ephemeral=True)
-            return
-
-        try:
-            await interaction.user.remove_roles(not_verified_role, reason="User verified")
-            await interaction.user.add_roles(verified_role, reason="User verified")
-            await interaction.response.send_message("✅ You have been verified!", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I don't have permission to manage your roles. Contact an admin.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
-
 async def apply_not_verified_to_all(guild_id, not_verified_role_id):
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -705,6 +663,15 @@ def parse_duration(duration_str: str) -> int:
         return int(duration_str[:-1])
     else:
         raise ValueError("Invalid duration format. Use e.g., 1d, 12h, 30m, 45s")
+
+def get_verification_view():
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="Verify on Website",
+        style=discord.ButtonStyle.link,
+        url="https://rblxlua-verification.pages.dev"
+    ))
+    return view
 
 @bot.tree.command(name="verify_system", description="Set up the verification system with an optional deadline")
 @app_commands.describe(
@@ -800,7 +767,8 @@ async def verify_system(
         title="🔐 Server Verification",
         description=(
             "Welcome to the server! We are glad to Have you here.\n\n"
-            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the **Verify on Website** button below.\n"
+            "You will be redirected to our verification page where you must complete a short challenge.\n"
             "This helps us keep the server safe and secure."
         ),
         color=0x1e90ff
@@ -808,12 +776,10 @@ async def verify_system(
     embed.set_footer(text="Verification System")
 
     deadline = None
-    deadline_timestamp = None
     if duration:
         try:
             seconds = parse_duration(duration)
             deadline = int(time.time()) + seconds
-            deadline_timestamp = deadline
             embed.add_field(
                 name="⏳ Verification Deadline",
                 value=f"All members must verify before <t:{deadline}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
@@ -823,9 +789,8 @@ async def verify_system(
             await interaction.followup.send(f"❌ Invalid duration: {e}", ephemeral=True)
             return
 
-    view = VerifyView(guild.id)
+    view = get_verification_view()
     msg = await channel.send(embed=embed, view=view)
-    bot.add_view(view, message_id=msg.id)
 
     config_data = {
         "guild_id": guild.id,
@@ -1181,7 +1146,6 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
 
-# ---------------- Flask API for Verification ----------------
 @app.route('/api/verify', methods=['POST'])
 def api_verify():
     data = request.get_json()
@@ -1196,7 +1160,6 @@ def api_verify():
     if not cf_token:
         return jsonify({'success': False, 'message': 'Missing cf_token'}), 400
 
-    # Validate Turnstile token
     async def validate_turnstile():
         async with aiohttp.ClientSession() as session:
             payload = {
@@ -1211,12 +1174,10 @@ def api_verify():
     if not success:
         return jsonify({'success': False, 'message': 'Turnstile challenge failed'}), 400
 
-    # Now assign the Verified role in the guild
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return jsonify({'success': False, 'message': 'Guild not found'}), 500
 
-    # Get verification config for this guild
     config = asyncio.run(asyncio.to_thread(verification_config_col.find_one, {'guild_id': GUILD_ID}))
     if not config:
         return jsonify({'success': False, 'message': 'Verification system not set up for this guild'}), 400
@@ -1230,17 +1191,13 @@ def api_verify():
     if not not_verified_role or not verified_role:
         return jsonify({'success': False, 'message': 'Roles are missing'}), 500
 
-    # Get member
     member = guild.get_member(int(user_id))
     if not member:
         return jsonify({'success': False, 'message': 'User not found in the server'}), 404
 
-    # Check if already verified
     if verified_role in member.roles:
         return jsonify({'success': False, 'message': 'User is already verified'}), 400
 
-    # If user doesn't have Not Verified role, they might have been verified through other means, but we'll assign anyway
-    # Add Verified role and remove Not Verified
     try:
         asyncio.run_coroutine_threadsafe(member.add_roles(verified_role, reason='Verified via website'), bot.loop)
         if not_verified_role in member.roles:
@@ -1250,7 +1207,6 @@ def api_verify():
 
     return jsonify({'success': True, 'message': 'You are verified!'})
 
-# ---------- Existing helper functions ----------
 def decode_all_escapes(s: str) -> str:
     try:
         s = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1),16)), s)
@@ -1850,7 +1806,8 @@ async def on_ready():
                         title="🔐 Server Verification",
                         description=(
                             "Welcome to the server! We are glad to Have you here.\n\n"
-                            "To gain access to all the channels and features, please verify yourself by clicking the **VERIFY** button below.\n"
+                            "To gain access to all the channels and features, please verify yourself by clicking the **Verify on Website** button below.\n"
+                            "You will be redirected to our verification page where you must complete a short challenge.\n"
                             "This helps us keep the server safe and secure."
                         ),
                         color=0x1e90ff
@@ -1862,9 +1819,8 @@ async def on_ready():
                             value=f"All members must verify before <t:{config['deadline']}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
                             inline=False
                         )
-                    view = VerifyView(guild_id)
+                    view = get_verification_view()
                     await msg.edit(embed=new_embed, view=view)
-                    bot.add_view(view, message_id=message_id)
                 except Exception as e:
                     print(f"Failed to update verification message: {e}")
 
