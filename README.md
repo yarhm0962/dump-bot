@@ -1,6 +1,6 @@
 # RblXLua Bot
 
-A feature-rich Discord bot for Lua deobfuscation, obfuscation, script searching, ticket management, verification, active checks, auto-delete, and administrative utilities.
+A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management, verification, active checks, auto-delete, and administrative utilities.
 
 ---
 
@@ -8,7 +8,6 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, script searching,
 
 - **Lua Deobfuscation** – Fetch code from a link, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays preview and optionally sends file.
 - **Lua Obfuscation** – Obfuscate Lua source code with a stable Prometheus-style single-base64 chunk.
-- **Script Search** – Search the web for a script by name; finds scripts from Pastebin, GitHub, Rentry, Controlc, Hastebin, and many other hosting sites, including game‑specific queries (e.g., Blox Fruit, Murder Mystery 2).
 - **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
 - **Verification System** – Restrict server access until users verify via a button; automatically sets up permissions and a "Not Verified" role.
 - **Active Checker** – Periodically ping @everyone in a specified channel to check user activity.
@@ -28,7 +27,6 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, script searching,
 |---------|-------------|
 | `.get` | Fetch and deobfuscate code from a URL, attachment, or reply. Displays cleaned code with preview/file. |
 | `.obf` | Obfuscate Lua code using Prometheus (single base64 chunk). Accepts link, attachment, or pasted code. |
-| `.request <query>` | Search the web for a script matching the query. Returns the loadstring and source URL. |
 | `.cmds` | Show this help menu (paginated). |
 | `.db status` | Check MongoDB connection status. |
 | `.db clear` | (Owner only) Clear all stored data. |
@@ -59,7 +57,7 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, script searching,
 - Python 3.9 or higher
 - A MongoDB database (Atlas or self‑hosted)
 - A Discord Bot Token
-- BeautifulSoup and lxml for web searching (`pip install beautifulsoup4 lxml`)
+- BeautifulSoup and lxml for web searching (used by `.get` for parsing, though you can remove if not needed)
 - (Optional) Lua interpreter if you intend to use the Prometheus deobfuscation engine that calls Lua (the bot will fall back to other methods if not available).
 
 ### 2. Environment Variables
@@ -126,7 +124,7 @@ The bot will start a Flask web server on port 10000 (for health checks) and the 
 The bot uses the following MongoDB collections:
 
 - `settings` – Command channel restriction.
-- `usage_logs` – Logs of `.get`, `.obf`, `.request`, etc. (for audit).
+- `usage_logs` – Logs of `.get`, `.obf`, etc. (for audit).
 - `tickets` – Open/closed ticket data.
 - `ticket_panels` – Configuration for each ticket panel.
 - `verification_config` – Verification role and channel settings.
@@ -137,9 +135,9 @@ The bot uses the following MongoDB collections:
 
 ## Customization
 
-- **Script Search** – Adjust the `script_sites` list or `search_terms` in the `search_web` function to add/remove sources.
 - **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
 - **Auto‑Delete** – The bot deletes messages immediately; you can add a delay by modifying the `on_message` event.
+- **Command Channel** – Use the `/channel_*` slash commands to restrict or allow command usage.
 
 ---
 
