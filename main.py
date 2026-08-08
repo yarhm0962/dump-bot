@@ -632,16 +632,90 @@ class VerifyView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
-@bot.tree.command(name="verify_system", description="Set up the verification system")
+# ---------- Verification Deadline Logic ----------
+async def apply_not_verified_to_all(guild_id, not_verified_role_id):
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    role = guild.get_role(not_verified_role_id)
+    if not role:
+        return
+    # Get verified role from config
+    config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": guild_id})
+    if not config:
+        return
+    verified_role_id = config.get("verified_role_id")
+    verified_role = guild.get_role(verified_role_id)
+    count = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        # If member has verified role, skip
+        if verified_role and verified_role in member.roles:
+            continue
+        # If they already have not_verified, skip
+        if role in member.roles:
+            continue
+        try:
+            await member.add_roles(role, reason="Verification deadline expired")
+            count += 1
+            if count % 10 == 0:
+                await asyncio.sleep(0.5)  # rate limit
+        except discord.Forbidden:
+            continue
+        except Exception as e:
+            print(f"Error assigning role to {member}: {e}")
+    print(f"Assigned Not Verified role to {count} members in guild {guild_id}")
+
+async def check_verification_deadlines():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            now = int(time.time())
+            # Find all guilds with a deadline and that are not processed yet (deadline <= now)
+            configs = await asyncio.to_thread(verification_config_col.find, {"deadline": {"$lte": now}})
+            async for config in configs:
+                guild_id = config["guild_id"]
+                not_verified_role_id = config["not_verified_role_id"]
+                # Check if already processed (to avoid repeated runs)
+                if config.get("deadline_processed", False):
+                    continue
+                await apply_not_verified_to_all(guild_id, not_verified_role_id)
+                # Mark as processed
+                await asyncio.to_thread(verification_config_col.update_one,
+                    {"guild_id": guild_id},
+                    {"$set": {"deadline_processed": True}}
+                )
+            # Also remove expired deadlines that are processed? We'll keep them for audit.
+        except Exception as e:
+            print(f"Verification deadline check error: {e}")
+        await asyncio.sleep(60)  # check every minute
+
+def parse_duration(duration_str: str) -> int:
+    duration_str = duration_str.lower().strip()
+    if duration_str.endswith("d"):
+        return int(duration_str[:-1]) * 86400
+    elif duration_str.endswith("h"):
+        return int(duration_str[:-1]) * 3600
+    elif duration_str.endswith("m"):
+        return int(duration_str[:-1]) * 60
+    elif duration_str.endswith("s"):
+        return int(duration_str[:-1])
+    else:
+        raise ValueError("Invalid duration format. Use e.g., 1d, 12h, 30m, 45s")
+
+@bot.tree.command(name="verify_system", description="Set up the verification system with an optional deadline")
 @app_commands.describe(
     select_role="The role to give upon verification",
-    channel="The channel where the verification message will be sent"
+    channel="The channel where the verification message will be sent",
+    duration="Duration until verification expires (e.g., 1d, 12h, 30m). If not set, no deadline."
 )
 @app_commands.default_permissions(administrator=True)
 async def verify_system(
     interaction: discord.Interaction,
     select_role: discord.Role,
-    channel: discord.TextChannel
+    channel: discord.TextChannel,
+    duration: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -731,6 +805,23 @@ async def verify_system(
     )
     embed.set_footer(text="Verification System")
 
+    # Parse duration if provided
+    deadline = None
+    deadline_timestamp = None
+    if duration:
+        try:
+            seconds = parse_duration(duration)
+            deadline = int(time.time()) + seconds
+            deadline_timestamp = deadline
+            embed.add_field(
+                name="⏳ Verification Deadline",
+                value=f"All members must verify before <t:{deadline}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
+                inline=False
+            )
+        except ValueError as e:
+            await interaction.followup.send(f"❌ Invalid duration: {e}", ephemeral=True)
+            return
+
     view = VerifyView(guild.id)
     msg = await channel.send(embed=embed, view=view)
     bot.add_view(view, message_id=msg.id)
@@ -740,7 +831,9 @@ async def verify_system(
         "not_verified_role_id": not_verified_role.id,
         "verified_role_id": select_role.id,
         "channel_id": channel.id,
-        "message_id": msg.id
+        "message_id": msg.id,
+        "deadline": deadline,
+        "deadline_processed": False if deadline else None
     }
     await asyncio.to_thread(verification_config_col.update_one,
         {"guild_id": guild.id},
@@ -748,14 +841,16 @@ async def verify_system(
         upsert=True
     )
 
-    await interaction.followup.send(
+    response = (
         f"✅ Verification system set up!\n"
         f"Not Verified role: {not_verified_role.mention}\n"
         f"Verified role: {select_role.mention}\n"
         f"Verification channel: {channel.mention}\n"
-        f"Assigned Not Verified role to {members_assigned} members.",
-        ephemeral=True
+        f"Assigned Not Verified role to {members_assigned} members."
     )
+    if duration:
+        response += f"\n⏳ Deadline set: <t:{deadline}:R>"
+    await interaction.followup.send(response, ephemeral=True)
 
 def decode_base64_urlsafe(data: str) -> str:
     data = data.strip()
@@ -1004,7 +1099,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification with optional deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -1689,6 +1784,13 @@ async def on_ready():
                         color=0x1e90ff
                     )
                     new_embed.set_footer(text="Verification System")
+                    # If there is a deadline, add it to the embed
+                    if config.get("deadline"):
+                        new_embed.add_field(
+                            name="⏳ Verification Deadline",
+                            value=f"All members must verify before <t:{config['deadline']}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
+                            inline=False
+                        )
                     view = VerifyView(guild_id)
                     await msg.edit(embed=new_embed, view=view)
                     bot.add_view(view, message_id=message_id)
@@ -1702,6 +1804,9 @@ async def on_ready():
         interval = cfg["interval"]
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
+
+    # Start the verification deadline checker
+    asyncio.create_task(check_verification_deadlines())
 
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
     if db is not None:
