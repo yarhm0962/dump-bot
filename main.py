@@ -23,7 +23,7 @@ import threading
 import time
 import subprocess
 import tempfile
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote_plus
 from bson import ObjectId
 from datetime import datetime, timedelta
 import marshal
@@ -34,6 +34,7 @@ import bz2
 from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
+from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -1458,6 +1459,7 @@ async def show_commands(ctx):
                 {"name": "`.level` / `.lvl`", "value": "Check your current level and XP.", "inline": False},
                 {"name": "`.cmds`", "value": "Show this help menu.", "inline": False},
                 {"name": "`.db`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
+                {"name": "`.request`", "value": "Search the web for a script and return its loadstring and source URL.", "inline": False},
             ]
         },
         {
@@ -1471,7 +1473,7 @@ async def show_commands(ctx):
 
     view = CmdsPaginationView(pages, ctx.author.id)
     embed = view.get_embed()
-    message = await ctx.send(embed=embed, view=view, mention_author=True)
+    message = await ctx.reply(embed=embed, view=view, mention_author=True)
     view.message = message
 
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
@@ -1637,6 +1639,87 @@ end)(...)'''
     except Exception as e:
         return False, str(e)
 
+async def search_web(query: str) -> list:
+    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
+        async with session.get(search_url, headers=headers) as resp:
+            if resp.status != 200:
+                return []
+            html = await resp.text()
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            for a in soup.select("a.result__a"):
+                href = a.get("href")
+                if href and href.startswith("//"):
+                    href = "https:" + href
+                title = a.text.strip()
+                if href and title:
+                    results.append((title, href))
+            return results[:5]
+
+async def find_script_from_search(query: str) -> tuple:
+    results = await search_web(query)
+    if not results:
+        return None, None, "No results found."
+
+    for title, url in results:
+        try:
+            ok, content, _ = await fetch_content(url)
+            if ok and content and len(content) > 100:
+                if "loadstring" in content or "local" in content or "function" in content:
+                    return title, url, content
+        except:
+            continue
+    return None, None, "No script found in the search results."
+
+@bot.command(name="request")
+async def request_script(ctx, *, query: str = None):
+    if not query:
+        await ctx.reply("❌ Please put a name like this: **.request <Any script name here>**", mention_author=False)
+        return
+
+    searching_embed = discord.Embed(
+        title="🔍 Searching for script",
+        description=f"Looking for `{query}` ...",
+        color=0x1e90ff
+    )
+    msg = await ctx.reply(embed=searching_embed, mention_author=False)
+
+    try:
+        title, url, content = await find_script_from_search(query)
+        if not content:
+            await msg.edit(embed=discord.Embed(
+                title="❌ Not Found",
+                description="Could not find a script for that query.",
+                color=0xe74c3c
+            ))
+            return
+
+        if len(content) > 1800:
+            file = File(io.BytesIO(content.encode('utf-8')), filename="script.lua")
+            embed = discord.Embed(
+                title="📜 Script Found",
+                description=f"**Source:** [{title}]({url})",
+                color=0x2ecc71
+            )
+            embed.add_field(name="Size", value=f"{round(len(content)/1024, 2)} KB", inline=False)
+            await msg.edit(embed=embed, file=file)
+        else:
+            embed = discord.Embed(
+                title="📜 Script Found",
+                description=f"**Source:** [{title}]({url})",
+                color=0x2ecc71
+            )
+            embed.add_field(name="Loadstring", value=f"```lua\n{content[:1000]}{'...' if len(content)>1000 else ''}\n```", inline=False)
+            await msg.edit(embed=embed)
+    except Exception as e:
+        await msg.edit(embed=discord.Embed(
+            title="❌ Error",
+            description=f"An error occurred: {str(e)[:200]}",
+            color=0xe74c3c
+        ))
+
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
@@ -1745,7 +1828,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | /auto_delete* | .level/.lvl"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /level_up_system | /active_checker | /bypass | /auto_delete* | .level/.lvl | .request"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
