@@ -57,7 +57,7 @@ verification_config_col = None
 level_config_col = None
 user_xp_col = None
 active_checker_col = None
-auto_delete_config_col = None  # new collection
+auto_delete_config_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -71,7 +71,7 @@ try:
     level_config_col = db["level_config"]
     user_xp_col = db["user_xp"]
     active_checker_col = db["active_checker_config"]
-    auto_delete_config_col = db["auto_delete_config"]   # new collection
+    auto_delete_config_col = db["auto_delete_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -426,7 +426,6 @@ async def on_message(message):
     if not message.guild:
         return
 
-    # Auto‑delete messages in configured channels (immediate deletion)
     if auto_delete_config_col is not None:
         config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": message.guild.id})
         if config and message.channel.id in config.get("channels", []):
@@ -434,7 +433,7 @@ async def on_message(message):
                 await message.delete()
             except:
                 pass
-            return  # stop processing further
+            return
 
     if message.content.startswith("."):
         await bot.process_commands(message)
@@ -680,96 +679,106 @@ class PersistentTicketPanel(discord.ui.View):
         self.add_item(button)
 
     async def open_ticket_callback(self, interaction: discord.Interaction):
-        panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(self.panel_id)})
-        if not panel:
-            await interaction.response.send_message("❌ This ticket panel is no longer valid.", ephemeral=True)
-            return
+        await interaction.response.defer(ephemeral=True)
 
-        existing = await asyncio.to_thread(tickets_col.find_one, {
-            "guild_id": interaction.guild.id,
-            "user_id": interaction.user.id,
-            "closed": False
-        })
-        if existing:
-            channel = interaction.guild.get_channel(existing["channel_id"])
-            if channel is None:
-                await asyncio.to_thread(tickets_col.update_one,
-                    {"_id": existing["_id"]},
-                    {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}}
-                )
-                existing = None
-            else:
-                await interaction.response.send_message("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
+        try:
+            panel = await asyncio.to_thread(ticket_panels_col.find_one, {"_id": ObjectId(self.panel_id)})
+            if not panel:
+                await interaction.followup.send("❌ This ticket panel is no longer valid.", ephemeral=True)
                 return
 
-        guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if not category:
-            category = await guild.create_category("Tickets")
+            existing = await asyncio.to_thread(tickets_col.find_one, {
+                "guild_id": interaction.guild.id,
+                "user_id": interaction.user.id,
+                "closed": False
+            })
+            if existing:
+                channel = interaction.guild.get_channel(existing["channel_id"])
+                if channel is None:
+                    await asyncio.to_thread(tickets_col.update_one,
+                        {"_id": existing["_id"]},
+                        {"$set": {"closed": True, "closed_at": datetime.utcnow(), "closed_by": None}}
+                    )
+                    existing = None
+                else:
+                    await interaction.followup.send("❌ You already have an open ticket. Please close it before opening a new one.", ephemeral=True)
+                    return
 
-        channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}",
-            category=category,
-            topic=f"Ticket for {interaction.user} ({interaction.user.id})"
-        )
+            guild = interaction.guild
+            category = discord.utils.get(guild.categories, name="Tickets")
+            if not category:
+                category = await guild.create_category("Tickets")
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
-        }
-        ping_role_ids = []
-        if panel.get("ping_role"):
-            ping_role_ids.append(panel["ping_role"])
-        for i in range(2, 5):
-            rid = panel.get(f"ping_role_{i}")
-            if rid:
-                ping_role_ids.append(rid)
-        for rid in ping_role_ids:
-            role = guild.get_role(rid)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            channel = await guild.create_text_channel(
+                name=f"ticket-{interaction.user.name}",
+                category=category,
+                topic=f"Ticket for {interaction.user} ({interaction.user.id})"
+            )
 
-        await channel.edit(overwrites=overwrites)
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
+            }
+            ping_role_ids = []
+            if panel.get("ping_role"):
+                ping_role_ids.append(panel["ping_role"])
+            for i in range(2, 5):
+                rid = panel.get(f"ping_role_{i}")
+                if rid:
+                    ping_role_ids.append(rid)
+            for rid in ping_role_ids:
+                role = guild.get_role(rid)
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-        mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else None
+            await channel.edit(overwrites=overwrites)
 
-        embed_ticket = discord.Embed(
-            title="🎟️ Ticket Created",
-            description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
-            color=panel.get("color", 0x2b2d31)
-        )
-        embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
+            mention_text = " ".join([f"<@&{rid}>" for rid in ping_role_ids]) if ping_role_ids else None
 
-        ticket_doc = {
-            "guild_id": guild.id,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "claimed_by": None,
-            "closed": False,
-            "created_at": datetime.utcnow(),
-            "panel_id": self.panel_id
-        }
-        result = await asyncio.to_thread(tickets_col.insert_one, ticket_doc)
-        ticket_id = str(result.inserted_id)
-        await asyncio.to_thread(tickets_col.update_one,
-            {"_id": result.inserted_id},
-            {"$set": {"ticket_id": ticket_id}}
-        )
+            embed_ticket = discord.Embed(
+                title="🎟️ Ticket Created",
+                description=f"{interaction.user.mention} has created a New Ticket 🎟️.",
+                color=panel.get("color", 0x2b2d31)
+            )
+            embed_ticket.set_footer(text=panel.get("footer_text", "Made by MonLua Bot"), icon_url=bot.user.display_avatar.url)
 
-        ticket_view = TicketView(ticket_id, panel)
-        await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
-        bot.add_view(ticket_view)
+            ticket_doc = {
+                "guild_id": guild.id,
+                "channel_id": channel.id,
+                "user_id": interaction.user.id,
+                "claimed_by": None,
+                "closed": False,
+                "created_at": datetime.utcnow(),
+                "panel_id": self.panel_id
+            }
+            result = await asyncio.to_thread(tickets_col.insert_one, ticket_doc)
+            ticket_id = str(result.inserted_id)
+            await asyncio.to_thread(tickets_col.update_one,
+                {"_id": result.inserted_id},
+                {"$set": {"ticket_id": ticket_id}}
+            )
 
-        jump_view = discord.ui.View()
-        jump_button = discord.ui.Button(
-            label="Go to Ticket",
-            style=discord.ButtonStyle.primary,
-            url=channel.jump_url
-        )
-        jump_view.add_item(jump_button)
+            ticket_view = TicketView(ticket_id, panel)
+            await channel.send(content=mention_text, embed=embed_ticket, view=ticket_view)
+            bot.add_view(ticket_view)
 
-        await interaction.response.send_message("✅ Ticket Created", view=jump_view, ephemeral=True)
+            jump_view = discord.ui.View()
+            jump_button = discord.ui.Button(
+                label="Go to Ticket",
+                style=discord.ButtonStyle.primary,
+                url=channel.jump_url
+            )
+            jump_view.add_item(jump_button)
+
+            await interaction.followup.send("✅ Ticket Created", view=jump_view, ephemeral=True)
+
+        except Exception as e:
+            print(f"Ticket creation error: {e}")
+            try:
+                await interaction.followup.send(f"❌ An error occurred while creating your ticket: {str(e)[:200]}", ephemeral=True)
+            except:
+                pass
 
 class TicketView(discord.ui.View):
     def __init__(self, ticket_id, panel, claim_disabled=None):
@@ -1465,13 +1474,10 @@ async def show_commands(ctx):
     message = await ctx.send(embed=embed, view=view, mention_author=True)
     view.message = message
 
-# ========== AUTO‑DELETE SLASH COMMANDS ==========
-
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
 @app_commands.describe(channel="The text channel to enable auto-deletion for")
 @app_commands.default_permissions(administrator=True)
 async def auto_delete_messages(interaction: discord.Interaction, channel: discord.TextChannel):
-    """Adds the specified channel to the auto-delete list."""
     guild_id = interaction.guild.id
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
     channels = config.get("channels", []) if config else []
@@ -1490,7 +1496,6 @@ async def auto_delete_messages(interaction: discord.Interaction, channel: discor
 
 @bot.tree.command(name="atd_view_channel", description="View all channels where auto-deletion is active")
 async def atd_view_channel(interaction: discord.Interaction):
-    """Lists all channels configured for auto-deletion in this server."""
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": interaction.guild.id})
     if not config or not config.get("channels"):
         await interaction.response.send_message("ℹ️ No channels are currently set for auto-deletion.", ephemeral=True)
@@ -1503,7 +1508,7 @@ async def atd_view_channel(interaction: discord.Interaction):
         if ch:
             channel_mentions.append(ch.mention)
         else:
-            channel_mentions.append(f"#deleted-channel ({cid})")  # fallback
+            channel_mentions.append(f"#deleted-channel ({cid})")
     embed = discord.Embed(
         title="📋 Auto‑Delete Channels",
         description="\n".join(channel_mentions) or "None",
@@ -1516,7 +1521,6 @@ async def atd_view_channel(interaction: discord.Interaction):
 @app_commands.describe(channel="The channel to remove from auto-deletion")
 @app_commands.default_permissions(administrator=True)
 async def atd_remove_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    """Removes a channel from the auto-delete list."""
     guild_id = interaction.guild.id
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
     if not config or not config.get("channels"):
@@ -1537,8 +1541,6 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
     else:
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
-
-# ========== HELPER FUNCTIONS (kept for .obf and bypass) ==========
 
 def decode_all_escapes(s: str) -> str:
     try:
