@@ -1,6 +1,6 @@
 # RblXLua Bot
 
-A feature-rich Discord bot for Lua obfuscation, server management (tickets, verification, leveling), and automated moderation.
+A feature-rich Discord bot for Lua obfuscation, server management (tickets, verification, leveling), automated moderation, and script searching.
 
 ---
 
@@ -12,6 +12,7 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 - **Verification System** – Automatically restrict server access until users verify via a button.
 - **Active Checker** – Periodically ping `@everyone` in a specified channel to check user activity.
 - **Auto-Delete Messages** – Instantly delete all messages in chosen channels.
+- **Script Search** – Search the web for a script and retrieve its loadstring and source URL.
 - **Slash & Prefix Commands** – Mix of modern slash commands and traditional prefix commands (`.`).
 - **Command Channel Restriction** – Limit commands to a single text channel (with owner bypass).
 - **Bypass Utility** – Extract keys from obfuscated URLs (Delta-like).
@@ -30,6 +31,7 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 | `.cmds` | Show this help menu (paginated). |
 | `.db status` | Check MongoDB connection status. |
 | `.db clear` | (Owner only) Clear all stored data. |
+| `.request <query>` | Search the web for a script and return its loadstring and source URL. |
 
 ### Slash Commands (`/`)
 
@@ -57,7 +59,7 @@ A feature-rich Discord bot for Lua obfuscation, server management (tickets, veri
 - Python 3.9 or higher
 - A MongoDB database (Atlas or self-hosted)
 - A Discord Bot Token
-- (Optional) Lua interpreter if you plan to use the Luraph pipeline (already removed, but kept for reference)
+- BeautifulSoup and lxml for web searching (`pip install beautifulsoup4 lxml`)
 
 ### 2. Environment Variables
 
@@ -92,6 +94,8 @@ discord.py
 aiohttp
 pymongo
 requests
+beautifulsoup4
+lxml
 ```
 
 ### 4. Running the Bot
@@ -136,6 +140,7 @@ The bot uses the following MongoDB collections:
 - **Level XP Requirements** – Modify the `XP_PER_LEVEL` dictionary in the source code.
 - **Level-Up Embeds** – Customize the `get_level_up_embed` function.
 - **Auto-Delete** – The bot deletes messages immediately; you can add a delay by modifying the `on_message` event.
+- **Script Search** – Adjust the search logic or add more sources in the `search_web` and `find_script_from_search` functions.
 
 ---
 
