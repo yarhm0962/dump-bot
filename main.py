@@ -990,21 +990,21 @@ async def show_commands(ctx):
     await delete_cmds_only(ctx)
     pages = [
         {
-            "title": "RblXLua Tool Commands (1/2)",
+            "title": "RblXLua Bot Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`.obf`", "value": "Obfuscate Lua code using Prometheus (single base64 chunk, stable).", "inline": False},
-                {"name": "`.cmds`", "value": "Show this help menu.", "inline": False},
-                {"name": "`.db`", "value": "Database commands: `status`, `clear` (owner only).", "inline": False},
-                {"name": "`.request`", "value": "Search the web for a script and return its loadstring and source URL.", "inline": False},
-                {"name": "`.get`", "value": "Fetch and deobfuscate code from a link, attachment, or reply.", "inline": False},
+                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Prometheus (single base64 chunk). Supports link, file, or pasted code.", "inline": False},
+                {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection.", "inline": False},
+                {"name": "`Bypass [.bypass]`", "value": "Extract a key from a Delta‑style obfuscated URL.", "inline": False},
+                {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
+                {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
             ]
         },
         {
-            "title": "RblXLua Tool Commands (2/2)",
+            "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "**Slash Commands**", "value": "`/ping` - Check bot latency\n`/channel_set` - Restrict commands to a channel\n`/channel_view` - View current restriction\n`/channel_clear` - Remove restriction\n`/ticket` - Create a ticket panel (admin only)\n`/verify_system` - Set up verification system (admin only)\n`/active_checker` - Set up active checker (admin only)\n`/bypass` - Bypass any URL and extract key\n`/auto_delete_messages` - Add a channel for auto-deletion\n`/atd_view_channel` - View auto-delete channels\n`/atd_remove_channel` - Remove a channel from auto-delete", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -1598,167 +1598,6 @@ async def get_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
-# ---------- .request command with improved search ----------
-pending_requests = {}
-
-async def search_web(query: str) -> list:
-    results = []
-    # Expanded list of script hosting sites
-    script_sites = [
-        "pastebin.com", "github.com", "rentry.co", "controlc.com",
-        "hastebin.com", "pastebin.pl", "justpaste.it", "textbin.net",
-        "0x0.st", "privatebin.net", "topastebin.com", "snippet.host",
-        "sourceb.in", "dpaste.com", "ideone.com", "repl.it", "codeshare.io"
-    ]
-    # Queries: generic + site-specific for each site, plus common script names
-    search_terms = [
-        query,
-        f"Blox Fruit {query}",
-        f"Murder Mystery 2 {query}",
-        f"{query} script pastebin",
-        f"{query} loadstring",
-        f"{query} lua script"
-    ]
-    searches = []
-    for term in search_terms:
-        searches.append(f"https://html.duckduckgo.com/html/?q={quote_plus(term)}")
-        for site in script_sites:
-            searches.append(f"https://html.duckduckgo.com/html/?q={quote_plus('site:' + site + ' ' + term)}")
-    # Remove duplicates
-    searches = list(set(searches))
-
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
-        for search_url in searches:
-            try:
-                async with session.get(search_url, headers=headers) as resp:
-                    if resp.status != 200:
-                        continue
-                    html = await resp.text()
-                    soup = BeautifulSoup(html, "html.parser")
-                    for a in soup.select("a.result__a"):
-                        href = a.get("href")
-                        if href and href.startswith("//"):
-                            href = "https:" + href
-                        title = a.text.strip()
-                        if href and title and href not in [r[1] for r in results]:
-                            results.append((title, href))
-                    for url_elem in soup.select(".result__url"):
-                        href = url_elem.text.strip()
-                        if href and any(site in href for site in script_sites) and href.startswith("http"):
-                            results.append(("Script", href))
-                await asyncio.sleep(0.2)
-            except:
-                continue
-    seen = set()
-    unique_results = []
-    for title, url in results:
-        if url not in seen:
-            seen.add(url)
-            unique_results.append((title, url))
-    return unique_results[:30]
-
-async def find_script_from_search(query: str) -> tuple:
-    results = await search_web(query)
-    if not results:
-        return None, None, "No results found."
-
-    # Enhanced Lua detection
-    lua_indicators = [
-        "loadstring", "local function", "function", "print", "game:", "script",
-        "wait(", "task.wait", "require(", "getfenv", "setfenv", "local player",
-        "game.Players", "workspace", "Instance.new", "Vector3", "CFrame",
-        "math.random", "string.char", "table.insert", "pcall", "xpcall"
-    ]
-    for title, url in results:
-        try:
-            ok, content, _ = await fetch_content(url)
-            if ok and content and len(content) > 100:
-                lower = content.lower()
-                # Check for at least two Lua indicators to avoid false positives
-                indicator_count = sum(1 for ind in lua_indicators if ind in lower)
-                if indicator_count >= 2:
-                    return title, url, content
-        except:
-            continue
-    return None, None, "No script found in the search results."
-
-@bot.command(name="request")
-async def request_script(ctx, *, query: str = None):
-    if not query:
-        await ctx.reply("❌ Please put a name like this: **.request <Any script name here>**", mention_author=False)
-        return
-
-    user_id = ctx.author.id
-    now = datetime.utcnow()
-    if user_id in pending_requests:
-        if (now - pending_requests[user_id]).total_seconds() < 30:
-            # Send a temporary message that will delete itself after 5 seconds
-            wait_msg = await ctx.reply("❌ Please wait I'm still looking for a script that you Requested.", mention_author=False)
-            await asyncio.sleep(5)
-            try:
-                await wait_msg.delete()
-            except:
-                pass
-            try:
-                await ctx.message.delete()
-            except:
-                pass
-            return
-        else:
-            del pending_requests[user_id]
-
-    pending_requests[user_id] = now
-
-    searching_embed = discord.Embed(
-        title="🔍 Searching for script",
-        description=f"Looking for `{query}` ...",
-        color=0x1e90ff
-    )
-    msg = await ctx.reply(embed=searching_embed, mention_author=False)
-
-    try:
-        title, url, content = await asyncio.wait_for(find_script_from_search(query), timeout=25.0)
-        if not content:
-            await msg.edit(embed=discord.Embed(
-                title="❌ Not Found",
-                description="Could not find a script for that query. Try a more specific name.",
-                color=0xe74c3c
-            ))
-            return
-
-        if len(content) > 1800:
-            file = File(io.BytesIO(content.encode('utf-8')), filename="script.lua")
-            embed = discord.Embed(
-                title="📜 Script Found",
-                description=f"**Source:** [{title}]({url})",
-                color=0x2ecc71
-            )
-            embed.add_field(name="Size", value=f"{round(len(content)/1024, 2)} KB", inline=False)
-            await msg.edit(embed=embed, file=file)
-        else:
-            embed = discord.Embed(
-                title="📜 Script Found",
-                description=f"**Source:** [{title}]({url})",
-                color=0x2ecc71
-            )
-            embed.add_field(name="Loadstring", value=f"```lua\n{content[:1000]}{'...' if len(content)>1000 else ''}\n```", inline=False)
-            await msg.edit(embed=embed)
-    except asyncio.TimeoutError:
-        await msg.edit(embed=discord.Embed(
-            title="⏱️ Search Timeout",
-            description="The search took too long. Try again with a more specific query.",
-            color=0xe74c3c
-        ))
-    except Exception as e:
-        await msg.edit(embed=discord.Embed(
-            title="❌ Error",
-            description=f"An error occurred: {str(e)[:200]}",
-            color=0xe74c3c
-        ))
-    finally:
-        pending_requests.pop(user_id, None)
-
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
     await delete_cmds_only(ctx)
@@ -1864,7 +1703,7 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .request | .get | .obf"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
