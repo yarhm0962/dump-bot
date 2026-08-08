@@ -43,6 +43,7 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
+from functools import lru_cache
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -75,7 +76,7 @@ ticket_panels_col = None
 verification_config_col = None
 active_checker_col = None
 auto_delete_config_col = None
-verified_users_col = None   # new collection
+verified_users_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -88,7 +89,7 @@ try:
     verification_config_col = db["verification_config"]
     active_checker_col = db["active_checker_config"]
     auto_delete_config_col = db["auto_delete_config"]
-    verified_users_col = db["verified_users"]   # new
+    verified_users_col = db["verified_users"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -97,6 +98,27 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+
+user_cache = {}
+USER_CACHE_TTL = 3600
+
+def get_discord_user(user_id):
+    now = time.time()
+    if user_id in user_cache and (now - user_cache[user_id]['ts']) < USER_CACHE_TTL:
+        return user_cache[user_id]['data']
+    try:
+        future = asyncio.run_coroutine_threadsafe(bot.fetch_user(user_id), bot.loop)
+        user = future.result(timeout=5)
+        data = {
+            'username': user.name,
+            'display_name': user.display_name,
+            'avatar_url': str(user.display_avatar.url)
+        }
+        user_cache[user_id] = {'data': data, 'ts': now}
+        return data
+    except Exception as e:
+        print(f"Failed to fetch user {user_id}: {e}")
+        return {'username': str(user_id), 'display_name': str(user_id), 'avatar_url': ''}
 
 async def get_allowed_channel():
     if settings_col is None:
@@ -1205,7 +1227,6 @@ def api_verify():
     if not member:
         return jsonify({'success': False, 'message': 'User not found in the server'}), 404
 
-    # Check if already verified (role present)
     if verified_role in member.roles:
         return jsonify({'success': False, 'message': 'User is already verified'}), 400
 
@@ -1216,7 +1237,6 @@ def api_verify():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Failed to assign role: {str(e)}'}), 500
 
-    # Record verification in MongoDB
     try:
         asyncio.run(asyncio.to_thread(
             verified_users_col.update_one,
@@ -1226,9 +1246,29 @@ def api_verify():
         ))
     except Exception as e:
         print(f"Failed to record verification: {e}")
-        # Don't fail the request; just log it
 
     return jsonify({'success': True, 'message': 'You are verified!'})
+
+@app.route('/api/verified_users', methods=['GET'])
+def get_verified_users():
+    try:
+        docs = asyncio.run(asyncio.to_thread(
+            verified_users_col.find, {'guild_id': GUILD_ID}
+        ))
+        result = []
+        for doc in docs:
+            user_id = doc['user_id']
+            user_data = get_discord_user(user_id)
+            result.append({
+                'user_id': user_id,
+                'username': user_data['username'],
+                'display_name': user_data['display_name'],
+                'avatar_url': user_data['avatar_url'],
+                'verified_at': doc['verified_at'].isoformat() if doc['verified_at'] else None
+            })
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def decode_all_escapes(s: str) -> str:
     try:
