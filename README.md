@@ -1,6 +1,6 @@
 # RblXLua Bot
 
-A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management, verification, active checks, auto-delete, and administrative utilities.
+A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management, verification with countdown, active checks, auto-delete, and administrative utilities.
 
 ---
 
@@ -9,7 +9,7 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management
 - **Lua Deobfuscation** – Fetch code from a link, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays preview and optionally sends file.
 - **Lua Obfuscation** – Obfuscate Lua source code with a stable Prometheus-style single-base64 chunk.
 - **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
-- **Verification System** – Restrict server access until users verify via a button; automatically sets up permissions and a "Not Verified" role.
+- **Verification System** – Restrict server access until users verify via a button. Optionally set a **countdown deadline** – after the deadline, all unverified members automatically receive the **Not Verified** role. The embed shows a Discord timestamp countdown.
 - **Active Checker** – Periodically ping @everyone in a specified channel to check user activity.
 - **Auto-Delete Messages** – Instantly delete all messages in chosen channels.
 - **Bypass Utility** – Extract keys from obfuscated URLs (Delta‑style).
@@ -41,7 +41,7 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management
 | `/channel_view` | Show the currently restricted channel. | None |
 | `/channel_clear` | Remove the channel restriction. | Administrator |
 | `/ticket` | Create a ticket panel with custom roles, claim button, embed color, etc. | Administrator |
-| `/verify_system` | Set up the verification system (creates "Not Verified" role, applies perms). | Administrator |
+| `/verify_system` | Set up verification system. **Optional `duration`** (e.g., `1d`, `12h`, `30m`) to set a countdown deadline. When the deadline expires, all unverified members get the **Not Verified** role. | Administrator |
 | `/active_checker` | Set up a periodic @everyone ping in a channel. | Administrator |
 | `/bypass` | Extract a key from a URL (Delta‑style bypass). | None |
 | `/auto_delete_messages` | Add a text channel to auto‑delete all new messages. | Administrator |
@@ -57,28 +57,17 @@ A feature-rich Discord bot for Lua deobfuscation, obfuscation, ticket management
 - Python 3.9 or higher
 - A MongoDB database (Atlas or self‑hosted)
 - A Discord Bot Token
-- BeautifulSoup and lxml for web searching (used by `.get` for parsing, though you can remove if not needed)
-- (Optional) Lua interpreter if you intend to use the Prometheus deobfuscation engine that calls Lua (the bot will fall back to other methods if not available).
+- BeautifulSoup and lxml (optional, used for web scraping)
+- (Optional) Lua interpreter for Prometheus deobfuscation (falls back to other methods if not available)
 
 ### 2. Environment Variables
-
-The bot reads the following environment variables:
 
 | Variable | Description |
 |----------|-------------|
 | `TOKEN` | Your Discord bot token. |
 | `MONGODB_URI` | MongoDB connection string. |
 
-Example:
-
-```bash
-export TOKEN="your_discord_bot_token"
-export MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/"
-```
-
 ### 3. Installation
-
-Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/yourusername/rblxlua-bot.git
@@ -98,7 +87,7 @@ beautifulsoup4
 lxml
 ```
 
-### 4. Running the Bot
+### 4. Running
 
 ```bash
 python main.py
@@ -114,36 +103,33 @@ The bot will start a Flask web server on port 10000 (for health checks) and the 
 - **Manage Channels** – For ticket creation and verification channel permission overrides.
 - **View Channel / Send Messages** – To function in designated channels.
 - **Read Message History** – For ticket and verification message updates.
-- **Manage Messages** – For auto‑delete functionality (it deletes messages).
-- **Administrator** – For setup commands (recommended for ease).
+- **Manage Messages** – For auto‑delete functionality.
+- **Administrator** – Recommended for setup commands.
 
 ---
 
 ## Database Collections
 
-The bot uses the following MongoDB collections:
-
 - `settings` – Command channel restriction.
-- `usage_logs` – Logs of `.get`, `.obf`, etc. (for audit).
+- `usage_logs` – Logs of `.get`, `.obf`, etc.
 - `tickets` – Open/closed ticket data.
 - `ticket_panels` – Configuration for each ticket panel.
-- `verification_config` – Verification role and channel settings.
+- `verification_config` – Verification role, channel, message ID, **deadline**, and processed flag.
 - `active_checker_config` – Active checker interval and channel.
-- `auto_delete_config` – List of channel IDs for auto‑deletion.
+- `auto_delete_config` – Channel IDs for auto‑deletion.
 
 ---
 
 ## Customization
 
 - **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
-- **Auto‑Delete** – The bot deletes messages immediately; you can add a delay by modifying the `on_message` event.
-- **Command Channel** – Use the `/channel_*` slash commands to restrict or allow command usage.
+- **Verification deadline** – The bot checks every minute; you can change the interval in `check_verification_deadlines()`.
 
 ---
 
 ## Support
 
-For issues or feature requests, please open an issue on the GitHub repository or contact the bot owner.
+For issues or feature requests, open an issue on GitHub or contact the bot owner.
 
 ---
 
