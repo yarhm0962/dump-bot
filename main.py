@@ -75,6 +75,7 @@ ticket_panels_col = None
 verification_config_col = None
 active_checker_col = None
 auto_delete_config_col = None
+verified_users_col = None   # new collection
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -87,6 +88,7 @@ try:
     verification_config_col = db["verification_config"]
     active_checker_col = db["active_checker_config"]
     auto_delete_config_col = db["auto_delete_config"]
+    verified_users_col = db["verified_users"]   # new
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -1203,6 +1205,7 @@ def api_verify():
     if not member:
         return jsonify({'success': False, 'message': 'User not found in the server'}), 404
 
+    # Check if already verified (role present)
     if verified_role in member.roles:
         return jsonify({'success': False, 'message': 'User is already verified'}), 400
 
@@ -1212,6 +1215,18 @@ def api_verify():
             asyncio.run_coroutine_threadsafe(member.remove_roles(not_verified_role, reason='Verified via website'), bot.loop)
     except Exception as e:
         return jsonify({'success': False, 'message': f'Failed to assign role: {str(e)}'}), 500
+
+    # Record verification in MongoDB
+    try:
+        asyncio.run(asyncio.to_thread(
+            verified_users_col.update_one,
+            {'guild_id': GUILD_ID, 'user_id': int(user_id)},
+            {'$set': {'verified_at': datetime.utcnow(), 'verified_by': 'website'}},
+            upsert=True
+        ))
+    except Exception as e:
+        print(f"Failed to record verification: {e}")
+        # Don't fail the request; just log it
 
     return jsonify({'success': True, 'message': 'You are verified!'})
 
