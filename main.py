@@ -1639,24 +1639,45 @@ end)(...)'''
     except Exception as e:
         return False, str(e)
 
+# Improved search functions
 async def search_web(query: str) -> list:
-    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+    results = []
+    search_engines = [
+        f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.com ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:github.com ' + query)}"
+    ]
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
-        async with session.get(search_url, headers=headers) as resp:
-            if resp.status != 200:
-                return []
-            html = await resp.text()
-            soup = BeautifulSoup(html, "html.parser")
-            results = []
-            for a in soup.select("a.result__a"):
-                href = a.get("href")
-                if href and href.startswith("//"):
-                    href = "https:" + href
-                title = a.text.strip()
-                if href and title:
-                    results.append((title, href))
-            return results[:5]
+        for search_url in search_engines:
+            try:
+                async with session.get(search_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        continue
+                    html = await resp.text()
+                    soup = BeautifulSoup(html, "html.parser")
+                    for a in soup.select("a.result__a"):
+                        href = a.get("href")
+                        if href and href.startswith("//"):
+                            href = "https:" + href
+                        title = a.text.strip()
+                        if href and title and href not in [r[1] for r in results]:
+                            results.append((title, href))
+                    # Also try to get raw pastebin links if they appear as result__url
+                    for url_elem in soup.select(".result__url"):
+                        href = url_elem.text.strip()
+                        if href and "pastebin.com" in href and href.startswith("http"):
+                            results.append(("Pastebin", href))
+            except:
+                continue
+    # Remove duplicates
+    seen = set()
+    unique_results = []
+    for title, url in results:
+        if url not in seen:
+            seen.add(url)
+            unique_results.append((title, url))
+    return unique_results[:10]
 
 async def find_script_from_search(query: str) -> tuple:
     results = await search_web(query)
@@ -1667,7 +1688,9 @@ async def find_script_from_search(query: str) -> tuple:
         try:
             ok, content, _ = await fetch_content(url)
             if ok and content and len(content) > 100:
-                if "loadstring" in content or "local" in content or "function" in content:
+                # Check if it looks like Lua code
+                lua_indicators = ["loadstring", "local function", "function", "print", "game:", "script", "wait(", "task.wait"]
+                if any(indicator in content.lower() for indicator in lua_indicators):
                     return title, url, content
         except:
             continue
@@ -1691,7 +1714,7 @@ async def request_script(ctx, *, query: str = None):
         if not content:
             await msg.edit(embed=discord.Embed(
                 title="❌ Not Found",
-                description="Could not find a script for that query.",
+                description="Could not find a script for that query. Try a more specific name.",
                 color=0xe74c3c
             ))
             return
