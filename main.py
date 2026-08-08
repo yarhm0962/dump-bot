@@ -1639,21 +1639,17 @@ end)(...)'''
     except Exception as e:
         return False, str(e)
 
+# Global pending requests lock
+pending_requests = {}
+
 async def search_web(query: str) -> list:
     results = []
     script_sites = [
-        "pastebin.com",
-        "github.com",
-        "rentry.co",
-        "controlc.com",
-        "hastebin.com",
-        "pastebin.pl",
-        "justpaste.it",
-        "textbin.net",
-        "0x0.st",
-        "privatebin.net"
+        "pastebin.com", "github.com", "rentry.co", "controlc.com",
+        "hastebin.com", "pastebin.pl", "justpaste.it", "textbin.net",
+        "0x0.st", "privatebin.net"
     ]
-    search_engines = [
+    searches = [
         f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:pastebin.com ' + query)}",
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:github.com ' + query)}",
@@ -1664,11 +1660,12 @@ async def search_web(query: str) -> list:
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:justpaste.it ' + query)}",
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:textbin.net ' + query)}",
         f"https://html.duckduckgo.com/html/?q={quote_plus('site:0x0.st ' + query)}",
-        f"https://html.duckduckgo.com/html/?q={quote_plus('site:privatebin.net ' + query)}"
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:privatebin.net ' + query)}",
+        f"https://html.duckduckgo.com/html/?q={quote_plus('site:youtube.com ' + query + ' script')}"
     ]
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"}
-        for search_url in search_engines:
+        for search_url in searches:
             try:
                 async with session.get(search_url, headers=headers) as resp:
                     if resp.status != 200:
@@ -1686,7 +1683,7 @@ async def search_web(query: str) -> list:
                         href = url_elem.text.strip()
                         if href and any(site in href for site in script_sites) and href.startswith("http"):
                             results.append(("Script", href))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
             except:
                 continue
     seen = set()
@@ -1695,7 +1692,7 @@ async def search_web(query: str) -> list:
         if url not in seen:
             seen.add(url)
             unique_results.append((title, url))
-    return unique_results[:15]
+    return unique_results[:20]
 
 async def find_script_from_search(query: str) -> tuple:
     results = await search_web(query)
@@ -1720,6 +1717,23 @@ async def request_script(ctx, *, query: str = None):
         await ctx.reply("❌ Please put a name like this: **.request <Any script name here>**", mention_author=False)
         return
 
+    user_id = ctx.author.id
+    now = datetime.utcnow()
+    if user_id in pending_requests:
+        # If the request started more than 30 seconds ago, assume it's stale and let the user proceed.
+        if (now - pending_requests[user_id]).total_seconds() < 30:
+            await ctx.reply("❌ Please wait I'm still looking for a script that you Requested.", mention_author=False)
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+            return
+        else:
+            # Stale entry, remove it
+            del pending_requests[user_id]
+
+    pending_requests[user_id] = now
+
     searching_embed = discord.Embed(
         title="🔍 Searching for script",
         description=f"Looking for `{query}` ...",
@@ -1728,7 +1742,8 @@ async def request_script(ctx, *, query: str = None):
     msg = await ctx.reply(embed=searching_embed, mention_author=False)
 
     try:
-        title, url, content = await find_script_from_search(query)
+        # Search with a total timeout of 20 seconds
+        title, url, content = await asyncio.wait_for(find_script_from_search(query), timeout=20.0)
         if not content:
             await msg.edit(embed=discord.Embed(
                 title="❌ Not Found",
@@ -1754,12 +1769,20 @@ async def request_script(ctx, *, query: str = None):
             )
             embed.add_field(name="Loadstring", value=f"```lua\n{content[:1000]}{'...' if len(content)>1000 else ''}\n```", inline=False)
             await msg.edit(embed=embed)
+    except asyncio.TimeoutError:
+        await msg.edit(embed=discord.Embed(
+            title="⏱️ Search Timeout",
+            description="The search took too long. Try again with a more specific query.",
+            color=0xe74c3c
+        ))
     except Exception as e:
         await msg.edit(embed=discord.Embed(
             title="❌ Error",
             description=f"An error occurred: {str(e)[:200]}",
             color=0xe74c3c
         ))
+    finally:
+        pending_requests.pop(user_id, None)
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
