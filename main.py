@@ -707,18 +707,16 @@ def get_verification_view():
     ))
     return view
 
-@bot.tree.command(name="verify_system", description="Set up the verification system with a deadline")
+@bot.tree.command(name="verification_system", description="Set up the verification system with an automatic deadline")
 @app_commands.describe(
     select_role="The role to give upon verification",
-    channel="The channel where the verification message will be sent",
-    duration="Duration until verification expires (e.g., 1d, 12h, 30m, 45s)."
+    channel="The channel where the verification message will be sent"
 )
 @app_commands.default_permissions(administrator=True)
-async def verify_system(
+async def verification_system(
     interaction: discord.Interaction,
     select_role: discord.Role,
-    channel: discord.TextChannel,
-    duration: str
+    channel: discord.TextChannel
 ):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -797,12 +795,8 @@ async def verify_system(
             except:
                 continue
 
-    try:
-        seconds = parse_duration(duration)
-        deadline = int(time.time()) + seconds
-    except ValueError as e:
-        await interaction.followup.send(f"❌ Invalid duration: {e}", ephemeral=True)
-        return
+    DEFAULT_VERIFICATION_DURATION = 86400  # 24 hours
+    deadline = int(time.time()) + DEFAULT_VERIFICATION_DURATION
 
     embed = discord.Embed(
         title="🔐 Server Verification",
@@ -845,7 +839,7 @@ async def verify_system(
         f"Verified role: {select_role.mention}\n"
         f"Verification channel: {channel.mention}\n"
         f"Assigned Not Verified role to {members_assigned} members.\n"
-        f"⏳ Deadline set: <t:{deadline}:R>"
+        f"⏳ Deadline set: <t:{deadline}:R> (auto 24 hours)"
     )
     await interaction.followup.send(response, ephemeral=True)
 
@@ -1096,7 +1090,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification with deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -1896,7 +1890,7 @@ async def on_ready():
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verify_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
