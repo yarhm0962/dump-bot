@@ -9,11 +9,11 @@ A feature‑rich Discord bot for Lua deobfuscation, obfuscation, ticket manageme
 - **Lua Deobfuscation** – Fetch code from a link, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays preview and optionally sends file.
 - **Lua Obfuscation** – Obfuscate Lua source code with a stable Prometheus‑style single‑base64 chunk.
 - **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
-- **Verification System** – Restrict server access until users verify via a link button. Supports optional countdown deadline.  
-  - A standalone web page with Cloudflare Turnstile (ads verification) calls the bot’s API to assign the Verified role.  
-  - Verification records are stored in MongoDB (`verified_users` collection).  
-  - If a user loses the Verified role (e.g., manually removed), they can re‑verify through the website – the bot allows it and updates the record.  
-  - The website includes a real‑time list of verified users with avatars, display names, and timestamps.
+- **Verification System** – Restrict server access until users verify via a link button. Supports optional countdown deadline.
+  - A standalone **single‑file HTML verification page** with Cloudflare Turnstile (ads verification) calls the bot’s API to assign the Verified role.
+  - Verification records are stored in MongoDB (`verified_users` collection).
+  - If a user loses the Verified role (e.g., manually removed), they can re‑verify through the website – the bot allows it and updates the record.
+  - The website includes a **real‑time list of verified users** with avatars, display names, and timestamps (fetched from `/api/verified_users`).
 - **Active Checker** – Periodically ping @everyone in a specified channel to check user activity.
 - **Auto‑Delete Messages** – Instantly delete all messages in chosen channels.
 - **Bypass Utility** – Extract keys from obfuscated URLs (Delta‑style).
@@ -56,35 +56,18 @@ A feature‑rich Discord bot for Lua deobfuscation, obfuscation, ticket manageme
 
 ## Verification Website
 
-The bot includes a standalone verification web page with a modern, lightweight design. The main HTML file is under 2 KB; all CSS, JavaScript, and SVG icons are loaded as separate assets.
+The bot includes a standalone verification web page that is **self‑contained in a single HTML file** (no external CSS/JS dependencies except Turnstile). The page:
 
-- Users visit the page, enter their Discord User ID, and complete the Turnstile challenge.
-- Upon success, the page sends a POST request to the bot’s `/api/verify` endpoint.
-- The bot validates the Turnstile token (using the secret key) and assigns the **Verified** role to the user in the configured guild.
-- If the user already has the Verified role, the API returns an error message (prevents double verification while the role is present).
-- If the role is later removed (by an admin), the user can verify again – the role check will pass and a new record will be added.
-- All successful verifications are stored in the MongoDB `verified_users` collection.
-- The website automatically shows a real‑time list of verified users with avatars, display names, and timestamps.
+- Shows a Turnstile challenge (ads verification) using your site key.
+- Allows the user to enter their Discord User ID.
+- On successful Turnstile completion and verification, sends a POST request to the bot’s `/api/verify` endpoint.
+- Displays a **real‑time list** of all verified users, including their avatars, display names, and verification timestamps, fetched from `/api/verified_users` and refreshed every 15 seconds.
+- Handles errors gracefully and offers a retry button if Turnstile fails to load.
 
-### Website File Structure
+### Deployment
 
-The verification website consists of the following files (all served from the root of your Cloudflare Pages project):
-
-```
-/
-├── index.html      (main skeleton, ~2 KB)
-├── style.min.css   (all styles, minified)
-├── app.min.js      (all JavaScript, minified)
-└── icon.svg        (favicon / site icon)
-```
-
-### Cloudflare Pages Performance Settings
-
-Enable the following for optimal speed:
-
-- **Brotli compression** – automatically minifies assets.
-- **Rocket Loader** – improves script loading.
-- **Automatic minification** – for HTML, CSS, and JS.
+- Upload the single `index.html` file to the root of your Cloudflare Pages project (or any static hosting).
+- The HTML uses your bot’s public URL (`https://dump-bot-m0yp.onrender.com`) as the API base – update this if your bot’s URL changes.
 
 ---
 
@@ -99,6 +82,8 @@ Enable the following for optimal speed:
 - (Optional) Lua interpreter for Prometheus deobfuscation (falls back to other methods if not available)
 
 ### 2. Environment Variables
+
+Set these on your hosting platform (e.g., Render):
 
 | Variable | Description |
 |----------|-------------|
@@ -126,7 +111,7 @@ cd rblxlua-bot
 pip install -r requirements.txt
 ```
 
-Requirements (`requirements.txt`):
+`requirements.txt`:
 
 ```
 discord.py
@@ -176,7 +161,7 @@ The bot will start a Flask web server on port `10000` (for health checks and the
 
 - **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
 - **Verification deadline** – The bot checks every minute; you can change the interval in `check_verification_deadlines()`.
-- **Web verification** – Adjust the Turnstile site key in `index.html` and the API endpoint URL in `app.min.js` if needed.
+- **Web verification** – Adjust the Turnstile site key in `index.html` and the API endpoint URL in the JavaScript if needed.
 - **User cache TTL** – Modify `USER_CACHE_TTL` (in seconds) to control how often Discord user data is refreshed.
 
 ---
