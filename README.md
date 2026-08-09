@@ -1,4 +1,3 @@
-```markdown
 # RblXLua Bot
 
 A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with anti‑tamper and anti‑environment logging, ticket management, Cloudflare Turnstile verification with gender selection, active checks, auto‑delete, and administrative utilities.
