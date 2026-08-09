@@ -69,6 +69,7 @@ if not GUILD_ID:
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+WEBSITE_URL = os.getenv("WEBSITE_URL", "https://rblxlua-verification.pages.dev")
 
 if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET or not DISCORD_REDIRECT_URI:
     print("❌ Discord OAuth2 environment variables missing")
@@ -747,7 +748,7 @@ def get_verification_view():
     view.add_item(discord.ui.Button(
         label="Verify on Website",
         style=discord.ButtonStyle.link,
-        url="https://rblxlua-verification.pages.dev"
+        url=WEBSITE_URL
     ))
     return view
 
@@ -1262,7 +1263,7 @@ def oauth_callback():
     avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else "https://cdn.discordapp.com/embed/avatars/0.png"
 
     success, msg = assign_verified_role(user_id)
-    redirect_url = DISCORD_REDIRECT_URI + '?'
+    redirect_url = WEBSITE_URL + '?'
     if success:
         redirect_url += f'verified=1&user_id={user_id}&username={username}&display_name={display_name}&avatar_url={avatar_url}'
     else:
