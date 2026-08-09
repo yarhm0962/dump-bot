@@ -975,7 +975,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Prometheus (single base64 chunk). Supports link, file, or pasted code.", "inline": False},
+                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with advanced anti‑tamper and anti‑env logging protection.", "inline": False},
                 {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection.", "inline": False},
                 {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
                 {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
@@ -1380,11 +1380,339 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
-    try:
-        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
-        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+ANTI_ENV_SCRIPT = r"""
+local _v_t = type;
+    local _v_p = pcall;
+    local _v_xp = xpcall;
+    local _v_r = rawget;
+    local _v_rs = rawset;
+    local _v_ts = tostring;
+    local _v_req = rawequal;
+    local _v_g = getfenv and getfenv() or _ENV or _G;
+    local _v_err = error;
+    local _v_sm = setmetatable;
+
+    local function _v_logDetect()
+        _v_p(_v_err, "logging detected");
+        while true do end;
+    end;
+
+    local _real_dbg = _v_g["debug"];
+    local _orig_di = _real_dbg and (_v_r(_real_dbg, "info") or _v_r(_real_dbg, "getinfo"));
+    local _orig_tb = _real_dbg and _v_r(_real_dbg, "traceback");
+    local _orig_gu = _real_dbg and _v_r(_real_dbg, "getupvalue");
+    local _orig_su = _real_dbg and _v_r(_real_dbg, "setupvalue");
+    local _iscc = _v_g["iscclosure"];
+
+    local function _c_v(_fn)
+        if _v_t(_fn) ~= "function" then return false end;
+        if _iscc then
+            local _s, _res = _v_p(_iscc, _fn);
+            if _s and not _res then return false end;
+        end;
+        if _orig_di then
+            local _s, _res = _v_p(_orig_di, _fn);
+            if _s and _v_t(_res) == "table" then
+                if _res.what ~= "C" then return false end;
+            end;
+        end;
+        return true;
+    end;
+
+    if not _c_v(_v_t) then _v_logDetect() end;
+    if not _c_v(_v_p) then _v_logDetect() end;
+    if not _c_v(_v_xp) then _v_logDetect() end;
+    if not _c_v(_v_sm) then _v_logDetect() end;
+    if not _c_v(_v_req) then _v_logDetect() end;
+    if not _c_v(_v_r) then _v_logDetect() end;
+    if not _c_v(_v_rs) then _v_logDetect() end;
+
+    local _np = _v_g["newproxy"];
+    local _secret_k = (_np and _c_v(_np)) and _np(false) or {};
+    local _secret_v = (_np and _c_v(_np)) and _np(false) or {};
+
+    local _proxy_active = false;
+    local _self_ref;
+
+    local function _v_tamperCheck()
+        local _s1, _v3 = _v_p(function() return _v_g["Vector3"] end);
+        if _s1 and _v3 then
+            if not _c_v(_v3.new) then _v_logDetect() end;
+            local _s2, _v3Res = _v_p(_v_ts, _v3.new(0,0,0));
+            if _s2 and _v3Res ~= "0, 0, 0" then _v_logDetect() end;
+        end;
+
+        local _s3, _en = _v_p(function() return _v_g["Enum"] end);
+        if _s3 and _en then
+            local _enT = _v_t(_en);
+            if _enT ~= "userdata" and _enT ~= "table" then _v_logDetect() end;
+        end;
+
+        if _v_g["print"] and not _c_v(_v_g["print"]) then _v_logDetect() end;
+        if _v_g["warn"] and not _c_v(_v_g["warn"]) then _v_logDetect() end;
+        if _v_g["error"] and not _c_v(_v_g["error"]) then _v_logDetect() end;
+
+        if _proxy_active and _self_ref then
+            local _s, _r = _v_p(function() return _self_ref[_secret_k] end);
+            if not _s or not _v_req(_r, _secret_v) then
+                _v_logDetect();
+            end;
+        end;
+    end;
+
+    _v_tamperCheck();
+
+    local _spoofMap = _v_sm({}, {__mode = "k"});
+
+    local function _proxy_di(...)
+        local _a1 = ...;
+        if _v_t(_a1) == "function" and _v_r(_spoofMap, _a1) then
+            _v_logDetect();
+        end;
+        if _orig_di then
+            local _s, _res = _v_p(_orig_di, ...);
+            if not _s then _v_logDetect() end;
+            return _res;
+        end;
+        return nil;
+    end;
+
+    local function _proxy_tb(...)
+        if _orig_tb then
+            local _s, _res = _v_p(_orig_tb, ...);
+            return _res;
+        end;
+        return "";
+    end;
+
+    local function _proxy_up(...)
+        local _a1 = ...;
+        if _v_t(_a1) == "function" and _v_r(_spoofMap, _a1) then
+            _v_logDetect();
+        end;
+        if _orig_gu then
+            local _s, _r1, _r2 = _v_p(_orig_gu, ...);
+            if not _s then _v_logDetect() end;
+            return _r1, _r2;
+        end;
+        return nil;
+    end;
+
+    local _s_cc, _newcc = _v_p(function() return _v_g["newcclosure"] end);
+    _newcc = (_s_cc and _c_v(_newcc)) and _newcc or nil;
+
+    local function _wrap(_fn)
+        if _v_t(_fn) ~= "function" then return _fn end;
+        local _proxy;
+        if _newcc then
+            _proxy = _newcc(function(...)
+                _v_tamperCheck();
+                return _fn(...);
+            end);
+        else
+            _proxy = function(...)
+                _v_tamperCheck();
+                return _fn(...);
+            end;
+        end;
+        _v_rs(_spoofMap, _proxy, _fn);
+        return _proxy;
+    end;
+
+    local _mt = {};
+    _self_ref = _v_sm({}, _mt);
+
+    local _ex_blk = {
+        getrawmetatable = true, setrawmetatable = true, getreg = true,
+        getgc = true, getgenv = true, getrenv = true,
+        getupvalues = true, getupvalue = true, setupvalue = true
+    };
+
+    _mt.__index = function(_self, _k)
+        if _v_req(_k, _secret_k) then return _secret_v end;
+
+        _v_tamperCheck();
+        if _k == "debug" then
+            local _dbg_mt = {};
+            local _dbg_proxy = _v_sm({
+                ["info"] = _proxy_di,
+                ["getinfo"] = _proxy_di,
+                ["traceback"] = _proxy_tb,
+                ["getupvalue"] = _proxy_up,
+                ["setupvalue"] = _proxy_up
+            }, _dbg_mt);
+
+            _dbg_mt.__index = function(_, _dk)
+                local _r = _real_dbg and _v_r(_real_dbg, _dk);
+                if _v_t(_r) == "function" then return _wrap(_r) end;
+                return _r;
+            end;
+            _dbg_mt.__newindex = function() _v_logDetect() end;
+            _dbg_mt.__metatable = false;
+
+            return _dbg_proxy;
+        end;
+
+        if _v_r(_ex_blk, _k) then
+            return function() _v_logDetect(); return nil; end;
+        end;
+
+        if _k == "iscclosure" and _iscc then
+            return function(_fn)
+                if _v_r(_spoofMap, _fn) then _v_logDetect() end;
+                return _c_v(_fn);
+            end;
+        end;
+        if _k == "tostring" and _v_ts then
+            return function(_fn)
+                if _v_r(_spoofMap, _fn) then _v_logDetect() end;
+                return _v_ts(_fn);
+            end;
+        end;
+        if _k == "getfenv" then
+            return function(_l)
+                local _lvl = _v_t(_l) == "number" and _l or 1;
+                if _lvl > 1 then _v_logDetect() end;
+                return _self;
+            end;
+        end;
+
+        local _s, _r = _v_p(function() return _v_g[_k] end);
+        if _s and _r ~= nil then
+            if _v_t(_r) == "function" then
+                return _wrap(_r);
+            end;
+            return _r;
+        end;
+        return nil;
+    end;
+
+    _mt.__newindex = function(_self, _k, _val)
+        _v_tamperCheck();
+        _v_p(function() _v_g[_k] = _val end);
+    end;
+
+    local function _pnlty() _v_logDetect(); return function() end end;
+    _mt.__pairs = _pnlty;
+    _mt.__ipairs = _pnlty;
+    _mt.__len = function() _v_logDetect(); return 0; end;
+    _mt.__tostring = function() _v_logDetect(); return ''; end;
+    _mt.__call = _pnlty;
+    _mt.__concat = _pnlty;
+    _mt.__unm = _pnlty;
+    _mt.__add = _pnlty;
+    _mt.__sub = _pnlty;
+    _mt.__mul = _pnlty;
+    _mt.__div = _pnlty;
+    _mt.__mod = _pnlty;
+    _mt.__pow = _pnlty;
+    _mt.__metatable = false;
+
+    _proxy_active = true;
+
+    local _s_set, _setfenv = _v_p(function() return _v_g["setfenv"] end);
+    if _s_set and _v_t(_setfenv) == "function" then
+        if not _c_v(_setfenv) then _v_logDetect() end;
+        _v_p(function()
+            local _s_ge, _rEnv = _v_p(getfenv, 2);
+            if _s_ge and not _v_req(_rEnv, _self_ref) then
+                _setfenv(2, _self_ref);
+            end;
+        end);
+    end;
+
+    return _self_ref;
+end)();
+
+local getfenv = function() return _envProxy end;
+local _ENV = _envProxy;
+local _G = _envProxy;
+"""
+
+ANTI_TAMPER_SCRIPT = r"""
+local AntiTamper = {}
+
+local function random_str()
+    local s = ""
+    for i = 1, math.random(7, 12) do
+        s = s .. string.char(math.random(97, 122))
+    end
+    return s
+end
+
+local function to_hex(str)
+    local out = ""
+    for i = 1, #str do
+        out = out .. "\\" .. str:byte(i)
+    end
+    return '"' .. out .. '"'
+end
+
+function AntiTamper.apply(src)
+    local lines = {}
+    local counter = "c_" .. random_str()
+    local add = "add_" .. random_str()
+
+    table.insert(lines, "local " .. counter .. " = 0")
+    table.insert(lines, "local function " .. add .. "() " .. counter .. " = " .. counter .. " + 1 end")
+
+    local checks = {
+        [[local b = buffer.create(16)
+        buffer.writeu32(b, 0, 0xDEADBEEF)
+        if buffer.readu32(b, 0) ~= 3735928559 or buffer.len(b) ~= 16 then
+            ]] .. add .. [[()
+        end]],
+
+        [[local b2 = buffer.create(4)
+        buffer.writeu8(b2, 0, 255)
+        if buffer.readu8(b2, 0) ~= 255 then
+            ]] .. add .. [[()
+        end]],
+
+        [[if game:GetService(]] .. to_hex("RunService") .. [[):IsStudio() then ]] .. add .. [[() end]],
+
+        [[if #game:GetService(]] .. to_hex("HttpService") .. [[):JSONEncode({test = 123}) < 5 then ]] .. add .. [[() end]],
+
+        [[if workspace.Gravity == 0 or workspace:FindFirstChild(]] .. to_hex("NonExistentChild") .. [[) then ]] .. add .. [[() end]]
+    }
+
+    for i = #checks, 2, -1 do
+        local j = math.random(i)
+        checks[i], checks[j] = checks[j], checks[i]
+    end
+
+    for _, code in ipairs(checks) do
+        table.insert(lines, "pcall(function() " .. code .. " end)")
+    end
+
+    local msg = to_hex("Security Violation")
+    table.insert(lines, [[if ]] .. counter .. [[ > 0 then
+        local p = game.Players.LocalPlayer
+        if p then p:Kick(]] .. msg .. [[) end
+        while true do
+            task.wait()
+            pcall(function() error(]] .. msg .. [[, 0) end)
+        end
+    end]])
+
+    return "task.spawn(function()\n" .. table.concat(lines, "\n") .. "\nend)\n" .. src
+end
+
+return AntiTamper
+"""
+
+def obfuscate_advanced(code: str) -> tuple[bool, str]:
+    import random, string, base64
+    key = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+    code_bytes = code.encode('utf-8')
+    encrypted = bytearray()
+    for i, b in enumerate(code_bytes):
+        encrypted.append(b ^ ord(key[i % len(key)]))
+    b64_enc = base64.b64encode(bytes(encrypted)).decode('ascii')
+
+    loader = f"""
+local function b64dec(data)
+    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = data:gsub('[^'..b..'=]', '')
     return (data:gsub('.', function(x)
         if x == '=' then return '' end
@@ -1398,13 +1726,108 @@ def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
         return string.char(c)
     end))
 end
-local raw = b64dec(L)
-local fn = loadstring and loadstring(raw) or load(raw)
-if fn then fn() else error("Failed to load obfuscated code") end
-end)(...)'''
-        return True, obfuscated
+
+local function xor_decrypt(data, key)
+    local out = {{}}
+    for i=1,#data do
+        out[i] = string.char(string.byte(data, i) ~= string.byte(key, (i-1)%#key+1))
+    end
+    return table.concat(out)
+end
+
+local encrypted = "{b64_enc}"
+local key = "{key}"
+local original = xor_decrypt(b64dec(encrypted), key)
+
+local AntiTamper = (function()
+{ANTI_TAMPER_SCRIPT}
+end)()
+
+local protected = AntiTamper.apply(original)
+local fn = loadstring(protected)
+if fn then fn() else error("Failed to load protected code") end
+"""
+    final = ANTI_ENV_SCRIPT + "\n" + loader
+    return True, final
+
+@bot.command(name="obf")
+async def obfuscate_command(ctx, *, link=None):
+    await delete_cmds_only(ctx)
+    if link:
+        ok, content, msg = await fetch_content(link)
+        if not ok:
+            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
+    else:
+        content = await extract_code(ctx)
+    if not content:
+        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
+        return await ctx.reply(embed=emb, mention_author=True)
+
+    proc = await ctx.reply(f"🔐 Obfuscating with advanced protection {ctx.author.mention}...", mention_author=True)
+    try:
+        success, result = obfuscate_advanced(content)
+        if not success:
+            await proc.delete()
+            await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
+            return
+
+        obfuscated = result
+        size_b = obfuscated.encode('utf-8')
+        size_kb = len(size_b) / 1024
+        file = None
+        desc = f"{ctx.author.mention}\n**Obfuscation:** Advanced (Anti‑Tamper + Anti‑Env)\n**Size:** `{round(size_kb,2)} KB`"
+        if size_kb > 10 or len(obfuscated) > 1800:
+            file = File(io.BytesIO(size_b), filename="obfuscated.lua")
+            desc += f"\n📦 Full code sent as file"
+            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
+        else:
+            preview = obfuscated[:1500] + ("\n... [truncated]" if len(obfuscated) > 1500 else "")
+            desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
+            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
+        emb.set_footer(text=f"Requested by {ctx.author}")
+        await proc.delete()
+        if file:
+            await ctx.reply(embed=emb, file=file, mention_author=True)
+        else:
+            await ctx.reply(embed=emb, mention_author=True)
+        if logs_col is not None:
+            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
     except Exception as e:
-        return False, str(e)
+        await proc.delete()
+        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
+
+async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(PROMETHEUS_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
 
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
@@ -1455,39 +1878,6 @@ out:write(result)
 out:close()
 print("SUCCESS")
 """
-
-async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
 
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
@@ -1824,52 +2214,6 @@ async def get_command(ctx, *, link=None):
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
-
-@bot.command(name="obf")
-async def obfuscate_command(ctx, *, link=None):
-    await delete_cmds_only(ctx)
-    if link:
-        ok, content, msg = await fetch_content(link)
-        if not ok:
-            return await ctx.reply(embed=discord.Embed(title="❌ Fetch Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{msg}"), mention_author=True)
-    else:
-        content = await extract_code(ctx)
-    if not content:
-        emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
-        return await ctx.reply(embed=emb, mention_author=True)
-
-    proc = await ctx.reply(f"🔐 Obfuscating with Prometheus {ctx.author.mention}...", mention_author=True)
-    try:
-        success, result = obfuscate_prometheus_python(content)
-        if not success:
-            await proc.delete()
-            await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
-            return
-
-        obfuscated = result
-        size_b = obfuscated.encode('utf-8')
-        size_kb = len(size_b) / 1024
-        file = None
-        desc = f"{ctx.author.mention}\n**Obfuscation:** Prometheus\n**Size:** `{round(size_kb,2)} KB`"
-        if size_kb > 10 or len(obfuscated) > 1800:
-            file = File(io.BytesIO(size_b), filename="obfuscated.lua")
-            desc += f"\n📦 Full code sent as file"
-            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
-        else:
-            preview = obfuscated[:1500] + ("\n... [truncated]" if len(obfuscated) > 1500 else "")
-            desc += f"\n\n**Preview:**\n```lua\n{preview}\n```"
-            emb = discord.Embed(title="🔐 Obfuscated Code", color=0x9b59b6, description=desc)
-        emb.set_footer(text=f"Requested by {ctx.author}")
-        await proc.delete()
-        if file:
-            await ctx.reply(embed=emb, file=file, mention_author=True)
-        else:
-            await ctx.reply(embed=emb, mention_author=True)
-        if logs_col is not None:
-            await asyncio.to_thread(logs_col.insert_one, {"uid": ctx.author.id, "act": "obfuscate", "url": extract_url(link if link else ctx.message.content), "at": discord.utils.utcnow()})
-    except Exception as e:
-        await proc.delete()
-        await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
 
 @bot.event
 async def on_ready():
