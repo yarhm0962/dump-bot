@@ -1268,8 +1268,45 @@ def oauth_callback():
         redirect_url += f'verified=1&user_id={user_id}&username={username}&display_name={display_name}&avatar_url={avatar_url}'
     else:
         redirect_url += f'error={msg}'
-    print(f"Redirecting to: {redirect_url}")
     return redirect(redirect_url)
+
+@app.route('/api/verify_oauth', methods=['POST'])
+def api_verify_oauth():
+    data = request.get_json()
+    if not data or 'code' not in data:
+        return jsonify({'success': False, 'message': 'Missing code'}), 400
+    code = data['code']
+    token_resp = requests.post('https://discord.com/api/oauth2/token', data={
+        'client_id': DISCORD_CLIENT_ID,
+        'client_secret': DISCORD_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': DISCORD_REDIRECT_URI
+    })
+    if token_resp.status_code != 200:
+        return jsonify({'success': False, 'message': 'Failed to exchange code'}), 400
+    token_data = token_resp.json()
+    access_token = token_data.get('access_token')
+    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
+    if user_resp.status_code != 200:
+        return jsonify({'success': False, 'message': 'Failed to get user info'}), 400
+    user_data = user_resp.json()
+    user_id = user_data['id']
+    username = user_data['username']
+    display_name = user_data.get('global_name') or username
+    avatar = user_data.get('avatar')
+    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else "https://cdn.discordapp.com/embed/avatars/0.png"
+    success, msg = assign_verified_role(user_id)
+    if success:
+        return jsonify({
+            'success': True,
+            'user_id': user_id,
+            'username': username,
+            'display_name': display_name,
+            'avatar_url': avatar_url
+        })
+    else:
+        return jsonify({'success': False, 'message': msg}), 400
 
 @app.route('/api/verify', methods=['POST'])
 def api_verify():
