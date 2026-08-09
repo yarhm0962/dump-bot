@@ -1181,6 +1181,7 @@ def api_verify():
 
     user_id = data.get('user_id')
     cf_token = data.get('cf_token')
+    gender = data.get('gender', '')
 
     if not user_id:
         return jsonify({'success': False, 'message': 'Missing user_id'}), 400
@@ -1236,7 +1237,7 @@ def api_verify():
         asyncio.run(asyncio.to_thread(
             verified_users_col.update_one,
             {'guild_id': GUILD_ID, 'user_id': int(user_id)},
-            {'$set': {'verified_at': datetime.utcnow(), 'verified_by': 'website'}},
+            {'$set': {'verified_at': datetime.utcnow(), 'verified_by': 'website', 'gender': gender}},
             upsert=True
         ))
     except Exception as e:
@@ -1259,7 +1260,8 @@ def get_verified_users():
                 'username': user_data['username'],
                 'display_name': user_data['display_name'],
                 'avatar_url': user_data['avatar_url'],
-                'verified_at': doc['verified_at'].isoformat() if doc['verified_at'] else None
+                'verified_at': doc['verified_at'].isoformat() if doc['verified_at'] else None,
+                'gender': doc.get('gender', '')
             })
         return jsonify(result)
     except Exception as e:
