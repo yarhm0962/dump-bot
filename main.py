@@ -1066,7 +1066,7 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
 
-# ---------- Bypass Command ----------
+# ---------- Bypass Command with Python implementation ----------
 class BypassView(discord.ui.View):
     def __init__(self, url):
         super().__init__(timeout=60)
@@ -1075,40 +1075,101 @@ class BypassView(discord.ui.View):
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.danger, emoji="⚠️")
     async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        # Disable the button
         button.disabled = True
         await interaction.edit_original_response(view=self)
 
-        # Run the Node.js bypass script
         try:
-            process = await asyncio.create_subprocess_exec(
-                'node', 'Bypass-Delta-main/bypass.js', self.url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                result = stdout.decode('utf-8').strip()
-                embed = discord.Embed(title="✅ Bypass Successful", color=discord.Color.purple())
-                embed.add_field(name="Original URL", value=f"```{self.url}```", inline=False)
-                embed.add_field(name="Result", value=f"```{result}```", inline=False)
-                await interaction.edit_original_response(embed=embed, view=None)
-            else:
-                error_msg = stderr.decode('utf-8').strip()
-                embed = discord.Embed(title="⚠️ Bypass Error", color=discord.Color.red())
-                embed.description = f"```{error_msg[:2000]}```"
-                await interaction.edit_original_response(embed=embed, view=None)
-
+            result = await bypass_url(self.url)
+            embed = discord.Embed(title="✅ Bypass Successful", color=discord.Color.purple())
+            embed.add_field(name="Original URL", value=f"```{self.url}```", inline=False)
+            embed.add_field(name="Result", value=f"```{result}```", inline=False)
+            await interaction.edit_original_response(embed=embed, view=None)
         except Exception as e:
-            embed = discord.Embed(title="⚠️ System Error", color=discord.Color.red())
+            embed = discord.Embed(title="⚠️ Bypass Error", color=discord.Color.red())
             embed.description = f"```{str(e)[:2000]}```"
             await interaction.edit_original_response(embed=embed, view=None)
+
+async def bypass_url(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    param_names = ['d', 'r', 'token', 'key', 'data', 'url', 'u', 'redirect']
+    found_url = None
+    for name in param_names:
+        if name in query:
+            val = query[name][0]
+            try:
+                decoded = base64.b64decode(val).decode('utf-8', errors='ignore')
+                if decoded.startswith('http'):
+                    found_url = decoded
+                    break
+            except:
+                pass
+            try:
+                decoded = decode_base64_urlsafe(val)
+                if decoded.startswith('http'):
+                    found_url = decoded
+                    break
+            except:
+                pass
+            if val.startswith('http'):
+                found_url = val
+                break
+
+    if not found_url:
+        found_url = url
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        async with session.get(found_url, headers=headers, allow_redirects=True, max_redirects=10) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status} when fetching URL.")
+            text = await resp.text(encoding='utf-8', errors='replace')
+
+    keys = extract_possible_keys(text)
+    if keys:
+        return keys[0]
+
+    keys = extract_possible_keys(url)
+    if keys:
+        return keys[0]
+
+    raise Exception("No key found in the page content or URL.")
+
+def decode_base64_urlsafe(data: str) -> str:
+    data = data.strip()
+    data = data.replace('-', '+').replace('_', '/')
+    padding = 4 - (len(data) % 4)
+    if padding != 4:
+        data += '=' * padding
+    return base64.b64decode(data).decode('utf-8', errors='ignore')
+
+def extract_possible_keys(text: str) -> list:
+    patterns = [
+        r'FREE_[A-Za-z0-9_]{25,}',
+        r'PREMIUM_[A-Za-z0-9_]{25,}',
+        r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+        r'\b[A-F0-9a-f]{32}\b',
+        r'\b[A-F0-9a-f]{64}\b'
+    ]
+    bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid", "var", "function", "document"]
+    keys = []
+    for pat in patterns:
+        matches = re.findall(pat, text)
+        for m in matches:
+            if len(m) < 28:
+                continue
+            if any(bad in m.lower() for bad in bad_words):
+                continue
+            keys.append(m)
+    return keys
 
 @bot.tree.command(name="bypass", description="Bypass Delta, Platoboost, Lootlabs, or Lootlink URLs.")
 @app_commands.describe(url="The REQUIRED link you want to bypass")
 async def slash_bypass(interaction: discord.Interaction, url: str):
-    # Send warning embed with continue button
     embed = discord.Embed(
         title="⚠️ Warning",
         description="You are putting your account at risk because Delta has a policy that there is a chance that your Delta or Account will be banned or timed out.",
