@@ -47,7 +47,7 @@ from bs4 import BeautifulSoup
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     print("❌ TOKEN missing")
-   exit(1)
+    exit(1)
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
@@ -1079,7 +1079,6 @@ class BypassView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         try:
-            # Run the Node.js bypass script
             script_path = os.path.join(os.getcwd(), "Bypass-Delta-main", "bypass.js")
             if not os.path.exists(script_path):
                 raise Exception("Bypass script not found. Please ensure Bypass-Delta-main/bypass.js exists.")
@@ -1096,7 +1095,6 @@ class BypassView(discord.ui.View):
                 raise Exception(f"Script error: {error_msg[:200]}")
 
             output = stdout.decode('utf-8').strip()
-            # The script might output JSON, or just the key. Try to parse JSON.
             try:
                 result = json.loads(output)
                 if result.get('success') and result.get('key'):
@@ -1104,7 +1102,6 @@ class BypassView(discord.ui.View):
                 else:
                     raise Exception("No key in JSON response")
             except json.JSONDecodeError:
-                # Fallback: assume output is the key directly
                 key = output
 
             if not key or len(key) < 5:
