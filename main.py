@@ -1157,7 +1157,6 @@ class BypassView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         try:
-            # Try to find bypass.js
             possible_paths = [
                 os.path.join(os.getcwd(), "bypass.js"),
                 os.path.join(os.getcwd(), "Bypass-Delta-main", "bypass.js"),
@@ -1195,7 +1194,6 @@ class BypassView(discord.ui.View):
                 if not key or len(key) < 5:
                     raise Exception("No valid key extracted")
             else:
-                # Fallback to Python bypass
                 key = await bypass_url_python(self.url)
 
             embed = discord.Embed(title="✅ Bypass Successful", color=discord.Color.purple())
