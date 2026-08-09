@@ -1066,7 +1066,85 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
 
-# ---------- Bypass Command ----------
+# ---------- Bypass Command (with improved path detection and fallback) ----------
+def decode_base64_urlsafe(data: str) -> str:
+    data = data.strip()
+    data = data.replace('-', '+').replace('_', '/')
+    padding = 4 - (len(data) % 4)
+    if padding != 4:
+        data += '=' * padding
+    return base64.b64decode(data).decode('utf-8', errors='ignore')
+
+def extract_possible_keys(text: str) -> list:
+    patterns = [
+        r'FREE_[A-Za-z0-9_]{25,}',
+        r'PREMIUM_[A-Za-z0-9_]{25,}',
+        r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
+        r'\b[A-F0-9a-f]{32}\b',
+        r'\b[A-F0-9a-f]{64}\b'
+    ]
+    bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid", "var", "function", "document"]
+    keys = []
+    for pat in patterns:
+        matches = re.findall(pat, text)
+        for m in matches:
+            if len(m) < 28:
+                continue
+            if any(bad in m.lower() for bad in bad_words):
+                continue
+            keys.append(m)
+    return keys
+
+async def bypass_url_python(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    param_names = ['d', 'r', 'token', 'key', 'data', 'url', 'u', 'redirect']
+    found_url = None
+    for name in param_names:
+        if name in query:
+            val = query[name][0]
+            try:
+                decoded = base64.b64decode(val).decode('utf-8', errors='ignore')
+                if decoded.startswith('http'):
+                    found_url = decoded
+                    break
+            except:
+                pass
+            try:
+                decoded = decode_base64_urlsafe(val)
+                if decoded.startswith('http'):
+                    found_url = decoded
+                    break
+            except:
+                pass
+            if val.startswith('http'):
+                found_url = val
+                break
+
+    if not found_url:
+        found_url = url
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        async with session.get(found_url, headers=headers, allow_redirects=True, max_redirects=10) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status} when fetching URL.")
+            text = await resp.text(encoding='utf-8', errors='replace')
+
+    keys = extract_possible_keys(text)
+    if keys:
+        return keys[0]
+
+    keys = extract_possible_keys(url)
+    if keys:
+        return keys[0]
+
+    raise Exception("No key found in the page content or URL.")
+
 class BypassView(discord.ui.View):
     def __init__(self, url):
         super().__init__(timeout=60)
@@ -1079,33 +1157,46 @@ class BypassView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         try:
-            script_path = os.path.join(os.getcwd(), "Bypass-Delta-main", "bypass.js")
-            if not os.path.exists(script_path):
-                raise Exception("Bypass script not found. Please ensure Bypass-Delta-main/bypass.js exists.")
+            # Try to find bypass.js
+            possible_paths = [
+                os.path.join(os.getcwd(), "bypass.js"),
+                os.path.join(os.getcwd(), "Bypass-Delta-main", "bypass.js"),
+                os.path.join(os.path.dirname(__file__), "bypass.js"),
+                os.path.join(os.path.dirname(__file__), "Bypass-Delta-main", "bypass.js")
+            ]
+            script_path = None
+            for p in possible_paths:
+                if os.path.exists(p):
+                    script_path = p
+                    break
 
-            proc = await asyncio.create_subprocess_exec(
-                "node", script_path, self.url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
+            if script_path:
+                proc = await asyncio.create_subprocess_exec(
+                    "node", script_path, self.url,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
 
-            if proc.returncode != 0:
-                error_msg = stderr.decode('utf-8').strip()
-                raise Exception(f"Script error: {error_msg[:200]}")
+                if proc.returncode != 0:
+                    error_msg = stderr.decode('utf-8').strip()
+                    raise Exception(f"Script error: {error_msg[:200]}")
 
-            output = stdout.decode('utf-8').strip()
-            try:
-                result = json.loads(output)
-                if result.get('success') and result.get('key'):
-                    key = result['key']
-                else:
-                    raise Exception("No key in JSON response")
-            except json.JSONDecodeError:
-                key = output
+                output = stdout.decode('utf-8').strip()
+                try:
+                    result = json.loads(output)
+                    if result.get('success') and result.get('key'):
+                        key = result['key']
+                    else:
+                        raise Exception("No key in JSON response")
+                except json.JSONDecodeError:
+                    key = output
 
-            if not key or len(key) < 5:
-                raise Exception("No valid key extracted")
+                if not key or len(key) < 5:
+                    raise Exception("No valid key extracted")
+            else:
+                # Fallback to Python bypass
+                key = await bypass_url_python(self.url)
 
             embed = discord.Embed(title="✅ Bypass Successful", color=discord.Color.purple())
             embed.add_field(name="Original URL", value=f"```{self.url}```", inline=False)
