@@ -69,10 +69,10 @@ if not GUILD_ID:
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-WEBSITE_URL = os.getenv("WEBSITE_URL", "https://rblxlua-verification.pages.dev")
+WEBSITE_URL = os.getenv("WEBSITE_URL")
 
-if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET or not DISCORD_REDIRECT_URI:
-    print("❌ Discord OAuth2 environment variables missing")
+if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET or not DISCORD_REDIRECT_URI or not WEBSITE_URL:
+    print("❌ Missing OAuth2 or WEBSITE_URL environment variables")
     exit(1)
 
 OWNER_ID = 1445289457866506290
@@ -1268,6 +1268,7 @@ def oauth_callback():
         redirect_url += f'verified=1&user_id={user_id}&username={username}&display_name={display_name}&avatar_url={avatar_url}'
     else:
         redirect_url += f'error={msg}'
+    print(f"Redirecting to: {redirect_url}")
     return redirect(redirect_url)
 
 @app.route('/api/verify', methods=['POST'])
