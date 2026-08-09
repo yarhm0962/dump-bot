@@ -43,7 +43,6 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
-from functools import lru_cache
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
