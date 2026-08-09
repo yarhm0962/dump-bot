@@ -9,11 +9,12 @@ A feature‑rich Discord bot for Lua deobfuscation, obfuscation, ticket manageme
 - **Lua Deobfuscation** – Fetch code from a link, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays preview and optionally sends file.
 - **Lua Obfuscation** – Obfuscate Lua source code with a stable Prometheus‑style single‑base64 chunk.
 - **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
-- **Verification System** – Restrict server access until users verify via a link button. Supports optional countdown deadline.
-  - A standalone **single‑file HTML verification page** with Cloudflare Turnstile (ads verification) calls the bot’s API to assign the Verified role.
-  - Verification records are stored in MongoDB (`verified_users` collection).
-  - If a user loses the Verified role (e.g., manually removed), they can re‑verify through the website – the bot allows it and updates the record.
-  - The website includes a **real‑time list of verified users** with avatars, display names, and timestamps (fetched from `/api/verified_users`).
+- **Verification System** – Restrict server access until users verify via a link button. **Automatically sets a 24‑hour deadline** (no manual duration required).  
+  - A standalone **single‑file HTML verification page** with Cloudflare Turnstile (ads verification) calls the bot’s API to assign the Verified role.  
+  - Verification records are stored in MongoDB (`verified_users` collection).  
+  - If a user loses the Verified role (e.g., manually removed), they can re‑verify through the website – the bot allows it and updates the record.  
+  - The website includes a **real‑time list of verified users** with avatars, display names, and timestamps (fetched from `/api/verified_users`).  
+  - After the 24‑hour deadline, all unverified members automatically receive the **Not Verified** role.
 - **Active Checker** – Periodically ping @everyone in a specified channel to check user activity.
 - **Auto‑Delete Messages** – Instantly delete all messages in chosen channels.
 - **Bypass Utility** – Extract keys from obfuscated URLs (Delta‑style).
@@ -45,7 +46,7 @@ A feature‑rich Discord bot for Lua deobfuscation, obfuscation, ticket manageme
 | `/channel_view` | Show the currently restricted channel. | None |
 | `/channel_clear` | Remove the channel restriction. | Administrator |
 | `/ticket` | Create a ticket panel with custom roles, claim button, embed color, etc. | Administrator |
-| `/verify_system` | Set up verification system. Optional `duration` (e.g., `1d`, `12h`, `30m`) to set a countdown deadline. When the deadline expires, all unverified members get the **Not Verified** role. The message includes a **Verify on Website** link button. | Administrator |
+| `/verification_system` | Set up verification system. **Automatically sets a 24‑hour countdown deadline** – no duration parameter needed. The embed shows a timestamp for the deadline; when it expires, all unverified members get the **Not Verified** role. The message includes a **Verify on Website** link button. | Administrator |
 | `/active_checker` | Set up a periodic @everyone ping in a channel. | Administrator |
 | `/bypass` | Extract a key from a URL (Delta‑style bypass). | None |
 | `/auto_delete_messages` | Add a text channel to auto‑delete all new messages. | Administrator |
@@ -160,7 +161,7 @@ The bot will start a Flask web server on port `10000` (for health checks and the
 ## Customization
 
 - **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
-- **Verification deadline** – The bot checks every minute; you can change the interval in `check_verification_deadlines()`.
+- **Verification deadline** – The bot uses a fixed 24‑hour deadline; you can change `DEFAULT_VERIFICATION_DURATION` in the code (line where it is defined) to any value in seconds.
 - **Web verification** – Adjust the Turnstile site key in `index.html` and the API endpoint URL in the JavaScript if needed.
 - **User cache TTL** – Modify `USER_CACHE_TTL` (in seconds) to control how often Discord user data is refreshed.
 
