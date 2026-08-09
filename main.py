@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 @app.after_request
@@ -31,7 +31,7 @@ import threading
 import time
 import subprocess
 import tempfile
-from urllib.parse import urlparse, parse_qs, quote_plus, urlencode
+from urllib.parse import urlparse, parse_qs, quote_plus
 from bson import ObjectId
 from datetime import datetime, timedelta
 import marshal
@@ -43,8 +43,6 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
-import secrets
-import requests
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -845,110 +843,6 @@ async def verification_system(
     )
     await interaction.followup.send(response, ephemeral=True)
 
-def decode_base64_urlsafe(data: str) -> str:
-    data = data.strip()
-    data = data.replace('-', '+').replace('_', '/')
-    padding = 4 - (len(data) % 4)
-    if padding != 4:
-        data += '=' * padding
-    return base64.b64decode(data).decode('utf-8', errors='ignore')
-
-def extract_possible_keys(text: str) -> list:
-    patterns = [
-        r'FREE_[A-Za-z0-9_]{25,}',
-        r'PREMIUM_[A-Za-z0-9_]{25,}',
-        r'[A-Z0-9a-z]{8}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{12}',
-        r'\b[A-F0-9a-f]{32}\b',
-        r'\b[A-F0-9a-f]{64}\b'
-    ]
-    bad_words = ["cloudflare", "insights", "analytics", "cdn", "sha256", "uuid", "var", "function", "document"]
-    keys = []
-    for pat in patterns:
-        matches = re.findall(pat, text)
-        for m in matches:
-            if len(m) < 28:
-                continue
-            if any(bad in m.lower() for bad in bad_words):
-                continue
-            keys.append(m)
-    return keys
-
-async def bypass_delta_key(url: str) -> tuple[bool, str, str]:
-    try:
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        param_names = ['d', 'r', 'token', 'key', 'data', 'url', 'u', 'redirect']
-        found_url = None
-        for name in param_names:
-            if name in query:
-                val = query[name][0]
-                try:
-                    decoded = base64.b64decode(val).decode('utf-8', errors='ignore')
-                    if decoded.startswith('http'):
-                        found_url = decoded
-                        break
-                except:
-                    pass
-                try:
-                    decoded = decode_base64_urlsafe(val)
-                    if decoded.startswith('http'):
-                        found_url = decoded
-                        break
-                except:
-                    pass
-                if val.startswith('http'):
-                    found_url = val
-                    break
-
-        if not found_url:
-            found_url = url
-
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            }
-            async with session.get(found_url, headers=headers, allow_redirects=True, max_redirects=10) as resp:
-                if resp.status != 200:
-                    return False, None, f"HTTP {resp.status} when fetching URL."
-                text = await resp.text(encoding='utf-8', errors='replace')
-
-        keys = extract_possible_keys(text)
-        if keys:
-            return True, keys[0], None
-
-        keys = extract_possible_keys(url)
-        if keys:
-            return True, keys[0], None
-
-        return False, None, "No key found in the page content or URL."
-    except Exception as e:
-        return False, None, f"Error during bypass: {str(e)}"
-
-@bot.tree.command(name="bypass", description="Bypass any URL and extract key")
-@app_commands.describe(url="The URL to bypass")
-async def slash_bypass(interaction: discord.Interaction, url: str):
-    await interaction.response.defer()
-    success, key, error = await bypass_delta_key(url)
-
-    if not success:
-        embed = discord.Embed(
-            title="❌ Bypass Failed",
-            description=f"An error occurred:\n```{error}```",
-            color=0xe74c3c
-        )
-        await interaction.followup.send(embed=embed)
-        return
-
-    embed = discord.Embed(
-        title="<:checkmark2:1446118933425033259> Bypass Successful",
-        description=f"🔑 Key retrieved — copy it and paste it into the application.\n\n```\n{key}\n```",
-        color=0x2ecc71
-    )
-    embed.set_footer(text=f"Request by {interaction.user.display_name}")
-    await interaction.followup.send(embed=embed)
-
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -1083,7 +977,6 @@ async def show_commands(ctx):
             "fields": [
                 {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Prometheus (single base64 chunk). Supports link, file, or pasted code.", "inline": False},
                 {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection.", "inline": False},
-                {"name": "`Bypass [.bypass]`", "value": "Extract a key from a Delta‑style obfuscated URL.", "inline": False},
                 {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
                 {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
             ]
@@ -1092,7 +985,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -1894,7 +1787,7 @@ async def on_ready():
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /auto_delete* | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
