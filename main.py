@@ -985,7 +985,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -1065,6 +1065,57 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
     else:
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
+
+# ---------- Bypass Command ----------
+class BypassView(discord.ui.View):
+    def __init__(self, url):
+        super().__init__(timeout=60)
+        self.url = url
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        # Disable the button
+        button.disabled = True
+        await interaction.edit_original_response(view=self)
+
+        # Run the Node.js bypass script
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'node', 'Bypass-Delta-main/bypass.js', self.url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                result = stdout.decode('utf-8').strip()
+                embed = discord.Embed(title="✅ Bypass Successful", color=discord.Color.purple())
+                embed.add_field(name="Original URL", value=f"```{self.url}```", inline=False)
+                embed.add_field(name="Result", value=f"```{result}```", inline=False)
+                await interaction.edit_original_response(embed=embed, view=None)
+            else:
+                error_msg = stderr.decode('utf-8').strip()
+                embed = discord.Embed(title="⚠️ Bypass Error", color=discord.Color.red())
+                embed.description = f"```{error_msg[:2000]}```"
+                await interaction.edit_original_response(embed=embed, view=None)
+
+        except Exception as e:
+            embed = discord.Embed(title="⚠️ System Error", color=discord.Color.red())
+            embed.description = f"```{str(e)[:2000]}```"
+            await interaction.edit_original_response(embed=embed, view=None)
+
+@bot.tree.command(name="bypass", description="Bypass Delta, Platoboost, Lootlabs, or Lootlink URLs.")
+@app_commands.describe(url="The REQUIRED link you want to bypass")
+async def slash_bypass(interaction: discord.Interaction, url: str):
+    # Send warning embed with continue button
+    embed = discord.Embed(
+        title="⚠️ Warning",
+        description="You are putting your account at risk because Delta has a policy that there is a chance that your Delta or Account will be banned or timed out.",
+        color=discord.Color.purple()
+    )
+    view = BypassView(url)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
 @app.route('/api/verify', methods=['POST'])
 def api_verify():
@@ -1787,7 +1838,7 @@ async def on_ready():
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /auto_delete* | .get | .obf"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
