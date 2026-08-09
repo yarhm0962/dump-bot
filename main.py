@@ -66,15 +66,6 @@ if not GUILD_ID:
     print("❌ GUILD_ID missing or invalid")
     exit(1)
 
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-WEBSITE_URL = os.getenv("WEBSITE_URL")
-
-if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET or not DISCORD_REDIRECT_URI or not WEBSITE_URL:
-    print("❌ Missing OAuth2 or WEBSITE_URL environment variables")
-    exit(1)
-
 OWNER_ID = 1445289457866506290
 
 mongo_client = None
@@ -129,40 +120,6 @@ def get_discord_user(user_id):
     except Exception as e:
         print(f"Failed to fetch user {user_id}: {e}")
         return {'username': str(user_id), 'display_name': str(user_id), 'avatar_url': ''}
-
-oauth_states = {}
-
-def assign_verified_role(user_id_str):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return False, 'Guild not found'
-    config = asyncio.run(asyncio.to_thread(verification_config_col.find_one, {'guild_id': GUILD_ID}))
-    if not config:
-        return False, 'Verification system not set up'
-    not_verified_role_id = config['not_verified_role_id']
-    verified_role_id = config['verified_role_id']
-    not_verified_role = guild.get_role(not_verified_role_id)
-    verified_role = guild.get_role(verified_role_id)
-    if not not_verified_role or not verified_role:
-        return False, 'Roles are missing'
-    member = guild.get_member(int(user_id_str))
-    if not member:
-        return False, 'User not found in the server'
-    if verified_role in member.roles:
-        return False, 'User is already verified'
-    try:
-        asyncio.run_coroutine_threadsafe(member.add_roles(verified_role, reason='Verified via OAuth'), bot.loop)
-        if not_verified_role in member.roles:
-            asyncio.run_coroutine_threadsafe(member.remove_roles(not_verified_role, reason='Verified via OAuth'), bot.loop)
-        asyncio.run(asyncio.to_thread(
-            verified_users_col.update_one,
-            {'guild_id': GUILD_ID, 'user_id': int(user_id_str)},
-            {'$set': {'verified_at': datetime.utcnow(), 'verified_by': 'oauth'}},
-            upsert=True
-        ))
-        return True, 'Verified'
-    except Exception as e:
-        return False, str(e)
 
 async def get_allowed_channel():
     if settings_col is None:
@@ -748,7 +705,7 @@ def get_verification_view():
     view.add_item(discord.ui.Button(
         label="Verify on Website",
         style=discord.ButtonStyle.link,
-        url=WEBSITE_URL
+        url="https://rblxlua-verification.pages.dev"
     ))
     return view
 
@@ -1215,98 +1172,6 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
     else:
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
-
-@app.route('/login')
-def login():
-    state = secrets.token_urlsafe(16)
-    oauth_states[state] = True
-    params = {
-        'client_id': DISCORD_CLIENT_ID,
-        'redirect_uri': DISCORD_REDIRECT_URI,
-        'response_type': 'code',
-        'scope': 'identify',
-        'state': state
-    }
-    url = 'https://discord.com/api/oauth2/authorize?' + urlencode(params)
-    return redirect(url)
-
-@app.route('/callback')
-def oauth_callback():
-    code = request.args.get('code')
-    state = request.args.get('state')
-    if not code or not state or state not in oauth_states:
-        return jsonify({'success': False, 'message': 'Invalid OAuth state'}), 400
-    del oauth_states[state]
-
-    data = {
-        'client_id': DISCORD_CLIENT_ID,
-        'client_secret': DISCORD_CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': DISCORD_REDIRECT_URI
-    }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    resp = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
-    if resp.status_code != 200:
-        return jsonify({'success': False, 'message': 'Failed to exchange code'}), 400
-    token_data = resp.json()
-    access_token = token_data.get('access_token')
-
-    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
-    if user_resp.status_code != 200:
-        return jsonify({'success': False, 'message': 'Failed to fetch user info'}), 400
-    user_data = user_resp.json()
-    user_id = user_data['id']
-    username = user_data['username']
-    display_name = user_data.get('global_name') or username
-    avatar = user_data.get('avatar')
-    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else "https://cdn.discordapp.com/embed/avatars/0.png"
-
-    success, msg = assign_verified_role(user_id)
-    redirect_url = WEBSITE_URL + '?'
-    if success:
-        redirect_url += f'verified=1&user_id={user_id}&username={username}&display_name={display_name}&avatar_url={avatar_url}'
-    else:
-        redirect_url += f'error={msg}'
-    return redirect(redirect_url)
-
-@app.route('/api/verify_oauth', methods=['POST'])
-def api_verify_oauth():
-    data = request.get_json()
-    if not data or 'code' not in data:
-        return jsonify({'success': False, 'message': 'Missing code'}), 400
-    code = data['code']
-    token_resp = requests.post('https://discord.com/api/oauth2/token', data={
-        'client_id': DISCORD_CLIENT_ID,
-        'client_secret': DISCORD_CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': DISCORD_REDIRECT_URI
-    })
-    if token_resp.status_code != 200:
-        return jsonify({'success': False, 'message': 'Failed to exchange code'}), 400
-    token_data = token_resp.json()
-    access_token = token_data.get('access_token')
-    user_resp = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
-    if user_resp.status_code != 200:
-        return jsonify({'success': False, 'message': 'Failed to get user info'}), 400
-    user_data = user_resp.json()
-    user_id = user_data['id']
-    username = user_data['username']
-    display_name = user_data.get('global_name') or username
-    avatar = user_data.get('avatar')
-    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else "https://cdn.discordapp.com/embed/avatars/0.png"
-    success, msg = assign_verified_role(user_id)
-    if success:
-        return jsonify({
-            'success': True,
-            'user_id': user_id,
-            'username': username,
-            'display_name': display_name,
-            'avatar_url': avatar_url
-        })
-    else:
-        return jsonify({'success': False, 'message': msg}), 400
 
 @app.route('/api/verify', methods=['POST'])
 def api_verify():
