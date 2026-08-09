@@ -667,7 +667,6 @@ async def check_verification_deadlines():
     while not bot.is_closed():
         try:
             now = int(time.time())
-            # Get all configs with deadline passed and not processed
             configs = await asyncio.to_thread(
                 lambda: list(verification_config_col.find({"deadline": {"$lte": now}}))
             )
@@ -708,18 +707,18 @@ def get_verification_view():
     ))
     return view
 
-@bot.tree.command(name="verify_system", description="Set up the verification system with an optional deadline")
+@bot.tree.command(name="verify_system", description="Set up the verification system with a deadline")
 @app_commands.describe(
     select_role="The role to give upon verification",
     channel="The channel where the verification message will be sent",
-    duration="Duration until verification expires (e.g., 1d, 12h, 30m). If not set, no deadline."
+    duration="Duration until verification expires (e.g., 1d, 12h, 30m, 45s)."
 )
 @app_commands.default_permissions(administrator=True)
 async def verify_system(
     interaction: discord.Interaction,
     select_role: discord.Role,
     channel: discord.TextChannel,
-    duration: Optional[str] = None
+    duration: str
 ):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -798,6 +797,13 @@ async def verify_system(
             except:
                 continue
 
+    try:
+        seconds = parse_duration(duration)
+        deadline = int(time.time()) + seconds
+    except ValueError as e:
+        await interaction.followup.send(f"❌ Invalid duration: {e}", ephemeral=True)
+        return
+
     embed = discord.Embed(
         title="🔐 Server Verification",
         description=(
@@ -809,20 +815,11 @@ async def verify_system(
         color=0x1e90ff
     )
     embed.set_footer(text="Verification System")
-
-    deadline = None
-    if duration:
-        try:
-            seconds = parse_duration(duration)
-            deadline = int(time.time()) + seconds
-            embed.add_field(
-                name="⏳ Verification Deadline",
-                value=f"All members must verify before <t:{deadline}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
-                inline=False
-            )
-        except ValueError as e:
-            await interaction.followup.send(f"❌ Invalid duration: {e}", ephemeral=True)
-            return
+    embed.add_field(
+        name="⏳ Verification Deadline",
+        value=f"All members must verify before <t:{deadline}:R>.\nAfter that, unverified members will receive the **Not Verified** role.",
+        inline=False
+    )
 
     view = get_verification_view()
     msg = await channel.send(embed=embed, view=view)
@@ -834,7 +831,7 @@ async def verify_system(
         "channel_id": channel.id,
         "message_id": msg.id,
         "deadline": deadline,
-        "deadline_processed": False if deadline else None
+        "deadline_processed": False
     }
     await asyncio.to_thread(verification_config_col.update_one,
         {"guild_id": guild.id},
@@ -847,10 +844,9 @@ async def verify_system(
         f"Not Verified role: {not_verified_role.mention}\n"
         f"Verified role: {select_role.mention}\n"
         f"Verification channel: {channel.mention}\n"
-        f"Assigned Not Verified role to {members_assigned} members."
+        f"Assigned Not Verified role to {members_assigned} members.\n"
+        f"⏳ Deadline set: <t:{deadline}:R>"
     )
-    if duration:
-        response += f"\n⏳ Deadline set: <t:{deadline}:R>"
     await interaction.followup.send(response, ephemeral=True)
 
 def decode_base64_urlsafe(data: str) -> str:
@@ -1100,7 +1096,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification with optional deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verify_system` – Set up verification with deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Extract key from URL\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
