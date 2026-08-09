@@ -667,14 +667,18 @@ async def check_verification_deadlines():
     while not bot.is_closed():
         try:
             now = int(time.time())
-            configs = await asyncio.to_thread(verification_config_col.find, {"deadline": {"$lte": now}})
-            async for config in configs:
+            # Get all configs with deadline passed and not processed
+            configs = await asyncio.to_thread(
+                lambda: list(verification_config_col.find({"deadline": {"$lte": now}}))
+            )
+            for config in configs:
                 guild_id = config["guild_id"]
                 not_verified_role_id = config["not_verified_role_id"]
                 if config.get("deadline_processed", False):
                     continue
                 await apply_not_verified_to_all(guild_id, not_verified_role_id)
-                await asyncio.to_thread(verification_config_col.update_one,
+                await asyncio.to_thread(
+                    verification_config_col.update_one,
                     {"guild_id": guild_id},
                     {"$set": {"deadline_processed": True}}
                 )
@@ -1252,7 +1256,7 @@ def api_verify():
 def get_verified_users():
     try:
         docs = asyncio.run(asyncio.to_thread(
-            verified_users_col.find, {'guild_id': GUILD_ID}
+            lambda: list(verified_users_col.find({'guild_id': GUILD_ID}))
         ))
         result = []
         for doc in docs:
