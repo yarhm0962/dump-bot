@@ -194,4 +194,3 @@ For issues or feature requests, open an issue on GitHub or contact the bot owner
 ## License
 
 This project is provided as‑is. Use at your own risk.
-```
