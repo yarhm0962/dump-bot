@@ -975,8 +975,8 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with advanced anti‑tamper and anti‑env logging protection.", "inline": False},
-                {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection.", "inline": False},
+                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Prometheus + anti‑tamper + anti‑env logging protection.", "inline": False},
+                {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection with retry and proxy fallback.", "inline": False},
                 {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
                 {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
             ]
@@ -1066,7 +1066,6 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
     await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
 
-# ---------- Bypass Command (with improved path detection and fallback) ----------
 def decode_base64_urlsafe(data: str) -> str:
     data = data.strip()
     data = data.replace('-', '+').replace('_', '/')
@@ -1328,32 +1327,44 @@ def extract_url(input_text: str) -> str:
 async def fetch_content(url: str) -> tuple[bool, str, str]:
     clean_url = extract_url(url)
     if not clean_url: return False, "", "No valid URL found"
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-            headers_list = [
-                {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36", "Accept": "*/*"},
-                {"User-Agent": "Roblox/WinInet", "Accept": "text/plain,application/lua"},
-                {"User-Agent": "curl/8.4.0", "Accept": "*/*"}
-            ]
-            last_error = ""
-            for headers in headers_list:
-                try:
-                    async with session.get(clean_url, headers=headers, allow_redirects=True, max_redirects=8) as resp:
-                        if resp.status == 404: last_error = "❌ 404: File does not exist"; continue
-                        if resp.status == 403: last_error = "❌ 403: Access blocked by host"; continue
-                        if resp.status >= 400: last_error = f"❌ HTTP Error: {resp.status}"; continue
-                        body = await resp.text(encoding="utf-8", errors="replace")
-                        if body and len(body.strip()) > 0: return True, decode_all_escapes(body), "Successfully fetched"
-                except Exception as e: last_error = str(e); continue
+    
+    proxies = [
+        None,
+        "https://api.allorigins.win/raw?url=",
+        "https://corsproxy.io/?",
+    ]
+    
+    for attempt in range(3):
+        for proxy in proxies:
             try:
-                proxy_url = f"https://api.allorigins.win/raw?url={clean_url}"
-                async with session.get(proxy_url, headers={"User-Agent":"curl/8.4.0"}, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                    if resp.status == 200:
-                        body = await resp.text(encoding="utf-8", errors="replace")
-                        return True, decode_all_escapes(body), "Successfully fetched via proxy"
-            except: pass
-            return False, "", last_error if last_error else "❌ Could not retrieve content"
-    except Exception as e: return False, "", f"❌ Error: {str(e)[:120]}"
+                target = clean_url if proxy is None else proxy + clean_url
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                    headers_list = [
+                        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36", "Accept": "*/*"},
+                        {"User-Agent": "Roblox/WinInet", "Accept": "text/plain,application/lua"},
+                        {"User-Agent": "curl/8.4.0", "Accept": "*/*"},
+                        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"}
+                    ]
+                    for headers in headers_list:
+                        try:
+                            async with session.get(target, headers=headers, allow_redirects=True, max_redirects=8) as resp:
+                                if resp.status == 502:
+                                    await asyncio.sleep(2)
+                                    continue
+                                if resp.status == 404: return False, "", "❌ 404: File does not exist"
+                                if resp.status == 403: return False, "", "❌ 403: Access blocked by host"
+                                if resp.status >= 400: return False, "", f"❌ HTTP Error: {resp.status}"
+                                body = await resp.text(encoding="utf-8", errors="replace")
+                                if body and len(body.strip()) > 0:
+                                    return True, decode_all_escapes(body), "Successfully fetched"
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        await asyncio.sleep(1)
+    return False, "", "❌ Could not retrieve content after multiple attempts"
 
 async def extract_code(ctx):
     content = ""
@@ -1701,18 +1712,11 @@ end
 return AntiTamper
 """
 
-def obfuscate_advanced(code: str) -> tuple[bool, str]:
-    import random, string, base64
-    key = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-    code_bytes = code.encode('utf-8')
-    encrypted = bytearray()
-    for i, b in enumerate(code_bytes):
-        encrypted.append(b ^ ord(key[i % len(key)]))
-    b64_enc = base64.b64encode(bytes(encrypted)).decode('ascii')
-
-    loader = f"""
-local function b64dec(data)
-    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
+    try:
+        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = data:gsub('[^'..b..'=]', '')
     return (data:gsub('.', function(x)
         if x == '=' then return '' end
@@ -1726,29 +1730,34 @@ local function b64dec(data)
         return string.char(c)
     end))
 end
+local raw = b64dec(L)
+local fn = loadstring and loadstring(raw) or load(raw)
+if fn then fn() else error("Failed to load obfuscated code") end
+end)(...)'''
+        return True, obfuscated
+    except Exception as e:
+        return False, str(e)
 
-local function xor_decrypt(data, key)
-    local out = {{}}
-    for i=1,#data do
-        out[i] = string.char(string.byte(data, i) ~= string.byte(key, (i-1)%#key+1))
-    end
-    return table.concat(out)
-end
+def obfuscate_advanced(code: str) -> tuple[bool, str]:
+    success, prom_result = obfuscate_prometheus_python(code)
+    if not success:
+        return False, prom_result
 
-local encrypted = "{b64_enc}"
-local key = "{key}"
-local original = xor_decrypt(b64dec(encrypted), key)
+    loader = f"""
+    {ANTI_ENV_SCRIPT}
 
-local AntiTamper = (function()
-{ANTI_TAMPER_SCRIPT}
-end)()
+    local AntiTamper = (function()
+    {ANTI_TAMPER_SCRIPT}
+    end)()
 
-local protected = AntiTamper.apply(original)
-local fn = loadstring(protected)
-if fn then fn() else error("Failed to load protected code") end
-"""
-    final = ANTI_ENV_SCRIPT + "\n" + loader
-    return True, final
+    local protected_code = AntiTamper.apply([==[
+    {prom_result}
+    ]==])
+
+    local fn = loadstring(protected_code)
+    if fn then fn() else error("Failed to load protected code") end
+    """
+    return True, loader
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
@@ -1763,7 +1772,7 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Obfuscating with advanced protection {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating with Prometheus + anti‑tamper + anti‑env {ctx.author.mention}...", mention_author=True)
     try:
         success, result = obfuscate_advanced(content)
         if not success:
@@ -1775,7 +1784,7 @@ async def obfuscate_command(ctx, *, link=None):
         size_b = obfuscated.encode('utf-8')
         size_kb = len(size_b) / 1024
         file = None
-        desc = f"{ctx.author.mention}\n**Obfuscation:** Advanced (Anti‑Tamper + Anti‑Env)\n**Size:** `{round(size_kb,2)} KB`"
+        desc = f"{ctx.author.mention}\n**Obfuscation:** Prometheus + Anti‑Tamper + Anti‑Env\n**Size:** `{round(size_kb,2)} KB`"
         if size_kb > 10 or len(obfuscated) > 1800:
             file = File(io.BytesIO(size_b), filename="obfuscated.lua")
             desc += f"\n📦 Full code sent as file"
@@ -1795,39 +1804,6 @@ async def obfuscate_command(ctx, *, link=None):
     except Exception as e:
         await proc.delete()
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
-
-async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_path = os.path.join(tmpdir, "deobf.lua")
-        input_path = os.path.join(tmpdir, "input.lua")
-        output_path = os.path.join(tmpdir, "output.lua")
-
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(PROMETHEUS_DEOBF_LUA)
-        with open(input_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "lua", script_path, input_path, output_path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            out = stdout.decode().strip()
-            if "ERROR:" in out:
-                err_msg = out.split("ERROR:", 1)[1].strip()
-                return False, err_msg
-            if os.path.exists(output_path):
-                with open(output_path, "r", encoding="utf-8") as f:
-                    result = f.read()
-                return True, result
-            return False, "Output file not created"
-        except asyncio.TimeoutError:
-            return False, "Deobfuscation timed out"
-        except FileNotFoundError:
-            return False, "Lua interpreter not found"
-        except Exception as e:
-            return False, str(e)
 
 PROMETHEUS_DEOBF_LUA = r"""
 local function DeobfuscatePrometheus(source)
@@ -1878,6 +1854,39 @@ out:write(result)
 out:close()
 print("SUCCESS")
 """
+
+async def deobfuscate_prometheus_lua(code: str) -> tuple[bool, str]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "deobf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        output_path = os.path.join(tmpdir, "output.lua")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(PROMETHEUS_DEOBF_LUA)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path, output_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            out = stdout.decode().strip()
+            if "ERROR:" in out:
+                err_msg = out.split("ERROR:", 1)[1].strip()
+                return False, err_msg
+            if os.path.exists(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = f.read()
+                return True, result
+            return False, "Output file not created"
+        except asyncio.TimeoutError:
+            return False, "Deobfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
 
 def deobfuscate_wearedevs(code: str) -> tuple[bool, str]:
     try:
