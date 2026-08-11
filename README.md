@@ -4,7 +4,7 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 
 ---
 
-## Features
+# Features
 
 ### Lua Deobfuscation
 - Fetch code from a link, attachment, or reply.
@@ -12,7 +12,8 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 - Displays a preview and optionally sends the full code as a file.
 
 ### Lua Obfuscation (Advanced)
-- Encrypts the source with XOR and Base64, then wraps it in a loader with built‑in **anti‑tamper** and **anti‑environment logging** protections.
+- Encrypts the source with Prometheus-style single-base64 chunk.
+- Wraps the result with built‑in **anti‑tamper** and **anti‑environment logging** protections.
 - The final output is a unique, self‑decrypting payload that resists static analysis and common deobfuscation attempts.
 - The anti‑tamper layer includes buffer integrity checks, RunService detection, and a security violation handler that kicks the player on failure.
 - The anti‑env layer hooks debug functions, proxies the environment, and detects logging attempts.
@@ -23,12 +24,13 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 
 ### Verification System
 - Restricts server access until users verify via a dedicated website.
-- **Intro Animation**: A cinematic lock‑and‑key SVG animation.
+- **Intro Animation**: A cinematic lock‑and‑key SVG animation that plays on first visit.
 - **Gender Selection**: Users choose Girl, Gay, or Boy; the choice is saved in `localStorage` and never asked again.
 - **Cloudflare Turnstile**: “Ads verification” step.
 - **Real‑time Verified Users List**: Shows avatars, display names, timestamps, and gender icons.
 - **24‑hour Deadline**: Automatic countdown; unverified members receive the **Not Verified** role after the deadline.
 - **Re‑verification**: If a user loses the Verified role, they can verify again.
+- **Manual Verification Apply**: The `/verify` slash command instantly applies the **Not Verified** role to all currently unverified members, showing a progress estimate and final report.
 
 ### Active Checker
 - Periodically ping @everyone in a specified channel to check user activity.
@@ -69,6 +71,7 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 | `/channel_clear` | Remove the channel restriction. | Administrator |
 | `/ticket` | Create a ticket panel with custom roles, claim button, embed color, etc. | Administrator |
 | `/verification_system` | Set up the verification system. Automatically sets a 24‑hour countdown deadline. The embed shows a timestamp; when it expires, all unverified members get the **Not Verified** role. The message includes a **Verify on Website** link button. | Administrator |
+| `/verify` | Immediately apply the **Not Verified** role to all members who are not yet verified. Shows an estimate of the time required and a final summary. | Administrator |
 | `/active_checker` | Set up a periodic @everyone ping in a channel. | Administrator |
 | `/bypass` | Extract a key from a URL (Delta‑style bypass). | None |
 | `/auto_delete_messages` | Add a text channel to auto‑delete all new messages. | Administrator |
