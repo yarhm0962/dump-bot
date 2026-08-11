@@ -843,6 +843,85 @@ async def verification_system(
     )
     await interaction.followup.send(response, ephemeral=True)
 
+@bot.tree.command(name="verify", description="Immediately apply the Not Verified role to all unverified members.")
+@app_commands.default_permissions(administrator=True)
+async def verify_now(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": guild.id})
+    if not config:
+        await interaction.followup.send("❌ Verification system is not set up in this server.", ephemeral=True)
+        return
+
+    not_verified_role_id = config["not_verified_role_id"]
+    verified_role_id = config["verified_role_id"]
+    not_verified_role = guild.get_role(not_verified_role_id)
+    verified_role = guild.get_role(verified_role_id)
+
+    if not not_verified_role or not verified_role:
+        await interaction.followup.send("❌ Verification roles are missing. Please re-run /verification_system.", ephemeral=True)
+        return
+
+    count = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if verified_role in member.roles:
+            continue
+        if not_verified_role in member.roles:
+            continue
+        count += 1
+
+    if count == 0:
+        await interaction.followup.send("✅ All members are already verified. No action needed.", ephemeral=True)
+        return
+
+    total_seconds = count * 0.5
+    minutes = int(total_seconds // 60)
+    seconds = int(total_seconds % 60)
+    if minutes > 0:
+        time_str = f"{minutes} minute{'s' if minutes != 1 else ''} and {seconds} second{'s' if seconds != 1 else ''}"
+    else:
+        time_str = f"{seconds} second{'s' if seconds != 1 else ''}"
+
+    msg = f"🌀 Changing roles for **{count}** members. This will take **{time_str}**, in ideal condition. Please be patient."
+    await interaction.followup.send(msg, ephemeral=True)
+
+    asyncio.create_task(apply_verification_roles(interaction, guild, not_verified_role, verified_role, count))
+
+async def apply_verification_roles(interaction, guild, not_verified_role, verified_role, count):
+    assigned = 0
+    errors = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if verified_role in member.roles:
+            continue
+        if not_verified_role in member.roles:
+            continue
+        try:
+            await member.add_roles(not_verified_role, reason="Manual verification apply")
+            assigned += 1
+            if assigned % 10 == 0:
+                await asyncio.sleep(0.5)
+        except discord.Forbidden:
+            errors += 1
+        except Exception as e:
+            print(f"Error assigning role to {member}: {e}")
+            errors += 1
+
+    try:
+        await interaction.followup.send(
+            f"✅ Finished applying roles.\n"
+            f"**Assigned:** {assigned} members\n"
+            f"**Errors:** {errors} members\n"
+            f"**Total processed:** {count} members",
+            ephemeral=True
+        )
+    except discord.HTTPException:
+        pass
+
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -985,7 +1064,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
             ]
         }
     ]
@@ -2291,7 +2370,7 @@ async def on_ready():
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /active_checker | /bypass | /auto_delete* | .get | .obf"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | .get | .obf"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
