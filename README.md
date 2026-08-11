@@ -1,11 +1,10 @@
-# RblXLua Bot
+# RblXLua Dump Bot
 
 A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with anti‑tamper and anti‑environment logging, ticket management, Cloudflare Turnstile verification with gender selection, active checks, auto‑delete, and administrative utilities.
 
 ---
 
-# Features
-
+# Features:
 ### Lua Deobfuscation
 - Fetch code from a link, attachment, or reply.
 - Multi‑layer deobfuscation: Prometheus, WeAreDevs, and a powerful fallback that unpacks Base64, XOR, string.char, and loadstring wrappers.
