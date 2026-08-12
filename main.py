@@ -1054,7 +1054,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Luraph-style anti‑tamper + anti‑env logging protection.", "inline": False},
+                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Luraph‑style anti‑tamper + anti‑env logging protection.", "inline": False},
                 {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection with retry and proxy fallback.", "inline": False},
                 {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
                 {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
@@ -2232,11 +2232,11 @@ return(function(a,b,c,d,e,f,g,h,i,j)return function()local k,l,m,n,o = {}, {}, 0
                         O = O
                     end
 
-                    local Q, R = pcall(loadstring, [====[
+                    local Q, R = pcall(loadstring, [=====[
 
         %%CODE%%
 
-        ]====], 'Luraph', nil)
+        ]=====], 'Luraph', nil)
 
                     if not Q then
                         local function Fail()
@@ -2336,7 +2336,7 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Obfuscating with Luraph-style anti‑tamper + anti‑env {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating with Luraph‑style anti‑tamper + anti‑env {ctx.author.mention}...", mention_author=True)
     try:
         success, result = obfuscate_advanced(content)
         if not success:
@@ -2348,7 +2348,7 @@ async def obfuscate_command(ctx, *, link=None):
         size_b = obfuscated.encode('utf-8')
         size_kb = len(size_b) / 1024
         file = None
-        desc = f"{ctx.author.mention}\n**Obfuscation:** Luraph-style Anti‑Tamper + Anti‑Env\n**Size:** `{round(size_kb,2)} KB`"
+        desc = f"{ctx.author.mention}\n**Obfuscation:** Luraph‑style Anti‑Tamper + Anti‑Env\n**Size:** `{round(size_kb,2)} KB`"
         if size_kb > 10 or len(obfuscated) > 1800:
             file = File(io.BytesIO(size_b), filename="obfuscated.lua")
             desc += f"\n📦 Full code sent as file"
