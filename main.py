@@ -1527,7 +1527,7 @@ else
 end
 """
 
-def obfuscate_advanced(code: str) -> tuple[bool, str]:
+async def obfuscate_advanced(code: str) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = os.path.join(tmpdir, "obf.lua")
         input_path = os.path.join(tmpdir, "input.lua")
@@ -1572,9 +1572,9 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Obfuscating with Luraph-style anti‑tamper + Prometheus control‑flow flattening {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating with Luraph‑style anti‑tamper + Prometheus control‑flow flattening {ctx.author.mention}...", mention_author=True)
     try:
-        success, result = obfuscate_advanced(content)
+        success, result = await obfuscate_advanced(content)
         if not success:
             await proc.delete()
             await ctx.reply(embed=discord.Embed(title="❌ Obfuscation Failed", color=0xe74c3c, description=f"{ctx.author.mention}\n{result}"), mention_author=True)
