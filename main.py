@@ -2232,11 +2232,11 @@ return(function(a,b,c,d,e,f,g,h,i,j)return function()local k,l,m,n,o = {}, {}, 0
                         O = O
                     end
 
-                    local Q, R = pcall(loadstring, [=[
+                    local Q, R = pcall(loadstring, [====[
 
         %%CODE%%
 
-        ]=], 'Luraph', nil)
+        ]====], 'Luraph', nil)
 
                     if not Q then
                         local function Fail()
