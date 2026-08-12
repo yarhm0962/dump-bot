@@ -1054,7 +1054,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (1/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Luraph‑style anti‑tamper + anti‑env logging protection.", "inline": False},
+                {"name": "`Obfuscator [.obf]`", "value": "Obfuscate Lua code with Luraph‑style anti‑tamper + Prometheus control‑flow flattening and string encryption.", "inline": False},
                 {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection with retry and proxy fallback.", "inline": False},
                 {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
                 {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
@@ -1470,858 +1470,94 @@ async def extract_code(ctx):
     if len(ctx.message.content.strip()) > 80: return decode_all_escapes(ctx.message.content)
     return None
 
-ANTI_ENV_SCRIPT = r"""
-local _v_t = type;
-    local _v_p = pcall;
-    local _v_xp = xpcall;
-    local _v_r = rawget;
-    local _v_rs = rawset;
-    local _v_ts = tostring;
-    local _v_req = rawequal;
-    local _v_g = getfenv and getfenv() or _ENV or _G;
-    local _v_err = error;
-    local _v_sm = setmetatable;
-
-    local function _v_logDetect()
-        _v_p(_v_err, "logging detected");
-        while true do end;
-    end;
-
-    local _real_dbg = _v_g["debug"];
-    local _orig_di = _real_dbg and (_v_r(_real_dbg, "info") or _v_r(_real_dbg, "getinfo"));
-    local _orig_tb = _real_dbg and _v_r(_real_dbg, "traceback");
-    local _orig_gu = _real_dbg and _v_r(_real_dbg, "getupvalue");
-    local _orig_su = _real_dbg and _v_r(_real_dbg, "setupvalue");
-    local _iscc = _v_g["iscclosure"];
-
-    local function _c_v(_fn)
-        if _v_t(_fn) ~= "function" then return false end;
-        if _iscc then
-            local _s, _res = _v_p(_iscc, _fn);
-            if _s and not _res then return false end;
-        end;
-        if _orig_di then
-            local _s, _res = _v_p(_orig_di, _fn);
-            if _s and _v_t(_res) == "table" then
-                if _res.what ~= "C" then return false end;
-            end;
-        end;
-        return true;
-    end;
-
-    if not _c_v(_v_t) then _v_logDetect() end;
-    if not _c_v(_v_p) then _v_logDetect() end;
-    if not _c_v(_v_xp) then _v_logDetect() end;
-    if not _c_v(_v_sm) then _v_logDetect() end;
-    if not _c_v(_v_req) then _v_logDetect() end;
-    if not _c_v(_v_r) then _v_logDetect() end;
-    if not _c_v(_v_rs) then _v_logDetect() end;
-
-    local _np = _v_g["newproxy"];
-    local _secret_k = (_np and _c_v(_np)) and _np(false) or {};
-    local _secret_v = (_np and _c_v(_np)) and _np(false) or {};
-
-    local _proxy_active = false;
-    local _self_ref;
-
-    local function _v_tamperCheck()
-        local _s1, _v3 = _v_p(function() return _v_g["Vector3"] end);
-        if _s1 and _v3 then
-            if not _c_v(_v3.new) then _v_logDetect() end;
-            local _s2, _v3Res = _v_p(_v_ts, _v3.new(0,0,0));
-            if _s2 and _v3Res ~= "0, 0, 0" then _v_logDetect() end;
-        end;
-
-        local _s3, _en = _v_p(function() return _v_g["Enum"] end);
-        if _s3 and _en then
-            local _enT = _v_t(_en);
-            if _enT ~= "userdata" and _enT ~= "table" then _v_logDetect() end;
-        end;
-
-        if _v_g["print"] and not _c_v(_v_g["print"]) then _v_logDetect() end;
-        if _v_g["warn"] and not _c_v(_v_g["warn"]) then _v_logDetect() end;
-        if _v_g["error"] and not _c_v(_v_g["error"]) then _v_logDetect() end;
-
-        if _proxy_active and _self_ref then
-            local _s, _r = _v_p(function() return _self_ref[_secret_k] end);
-            if not _s or not _v_req(_r, _secret_v) then
-                _v_logDetect();
-            end;
-        end;
-    end;
-
-    _v_tamperCheck();
-
-    local _spoofMap = _v_sm({}, {__mode = "k"});
-
-    local function _proxy_di(...)
-        local _a1 = ...;
-        if _v_t(_a1) == "function" and _v_r(_spoofMap, _a1) then
-            _v_logDetect();
-        end;
-        if _orig_di then
-            local _s, _res = _v_p(_orig_di, ...);
-            if not _s then _v_logDetect() end;
-            return _res;
-        end;
-        return nil;
-    end;
-
-    local function _proxy_tb(...)
-        if _orig_tb then
-            local _s, _res = _v_p(_orig_tb, ...);
-            return _res;
-        end;
-        return "";
-    end;
-
-    local function _proxy_up(...)
-        local _a1 = ...;
-        if _v_t(_a1) == "function" and _v_r(_spoofMap, _a1) then
-            _v_logDetect();
-        end;
-        if _orig_gu then
-            local _s, _r1, _r2 = _v_p(_orig_gu, ...);
-            if not _s then _v_logDetect() end;
-            return _r1, _r2;
-        end;
-        return nil;
-    end;
-
-    local _s_cc, _newcc = _v_p(function() return _v_g["newcclosure"] end);
-    _newcc = (_s_cc and _c_v(_newcc)) and _newcc or nil;
-
-    local function _wrap(_fn)
-        if _v_t(_fn) ~= "function" then return _fn end;
-        local _proxy;
-        if _newcc then
-            _proxy = _newcc(function(...)
-                _v_tamperCheck();
-                return _fn(...);
-            end);
-        else
-            _proxy = function(...)
-                _v_tamperCheck();
-                return _fn(...);
-            end;
-        end;
-        _v_rs(_spoofMap, _proxy, _fn);
-        return _proxy;
-    end;
-
-    local _mt = {};
-    _self_ref = _v_sm({}, _mt);
-
-    local _ex_blk = {
-        getrawmetatable = true, setrawmetatable = true, getreg = true,
-        getgc = true, getgenv = true, getrenv = true,
-        getupvalues = true, getupvalue = true, setupvalue = true
-    };
-
-    _mt.__index = function(_self, _k)
-        if _v_req(_k, _secret_k) then return _secret_v end;
-
-        _v_tamperCheck();
-        if _k == "debug" then
-            local _dbg_mt = {};
-            local _dbg_proxy = _v_sm({
-                ["info"] = _proxy_di,
-                ["getinfo"] = _proxy_di,
-                ["traceback"] = _proxy_tb,
-                ["getupvalue"] = _proxy_up,
-                ["setupvalue"] = _proxy_up
-            }, _dbg_mt);
-
-            _dbg_mt.__index = function(_, _dk)
-                local _r = _real_dbg and _v_r(_real_dbg, _dk);
-                if _v_t(_r) == "function" then return _wrap(_r) end;
-                return _r;
-            end;
-            _dbg_mt.__newindex = function() _v_logDetect() end;
-            _dbg_mt.__metatable = false;
-
-            return _dbg_proxy;
-        end;
-
-        if _v_r(_ex_blk, _k) then
-            return function() _v_logDetect(); return nil; end;
-        end;
-
-        if _k == "iscclosure" and _iscc then
-            return function(_fn)
-                if _v_r(_spoofMap, _fn) then _v_logDetect() end;
-                return _c_v(_fn);
-            end;
-        end;
-        if _k == "tostring" and _v_ts then
-            return function(_fn)
-                if _v_r(_spoofMap, _fn) then _v_logDetect() end;
-                return _v_ts(_fn);
-            end;
-        end;
-        if _k == "getfenv" then
-            return function(_l)
-                local _lvl = _v_t(_l) == "number" and _l or 1;
-                if _lvl > 1 then _v_logDetect() end;
-                return _self;
-            end;
-        end;
-
-        local _s, _r = _v_p(function() return _v_g[_k] end);
-        if _s and _r ~= nil then
-            if _v_t(_r) == "function" then
-                return _wrap(_r);
-            end;
-            return _r;
-        end;
-        return nil;
-    end;
-
-    _mt.__newindex = function(_self, _k, _val)
-        _v_tamperCheck();
-        _v_p(function() _v_g[_k] = _val end);
-    end;
-
-    local function _pnlty() _v_logDetect(); return function() end end;
-    _mt.__pairs = _pnlty;
-    _mt.__ipairs = _pnlty;
-    _mt.__len = function() _v_logDetect(); return 0; end;
-    _mt.__tostring = function() _v_logDetect(); return ''; end;
-    _mt.__call = _pnlty;
-    _mt.__concat = _pnlty;
-    _mt.__unm = _pnlty;
-    _mt.__add = _pnlty;
-    _mt.__sub = _pnlty;
-    _mt.__mul = _pnlty;
-    _mt.__div = _pnlty;
-    _mt.__mod = _pnlty;
-    _mt.__pow = _pnlty;
-    _mt.__metatable = false;
-
-    _proxy_active = true;
-
-    local _s_set, _setfenv = _v_p(function() return _v_g["setfenv"] end);
-    if _s_set and _v_t(_setfenv) == "function" then
-        if not _c_v(_setfenv) then _v_logDetect() end;
-        _v_p(function()
-            local _s_ge, _rEnv = _v_p(getfenv, 2);
-            if _s_ge and not _v_req(_rEnv, _self_ref) then
-                _setfenv(2, _self_ref);
-            end;
-        end);
-    end;
-
-    return _self_ref;
-end)();
-
-local getfenv = function() return _envProxy end;
-local _ENV = _envProxy;
-local _G = _envProxy;
-"""
-
-ANTI_TAMPER_SCRIPT = r"""
-return(function(a,b,c,d,e,f,g,h,i,j)return function()local k,l,m,n,o = {}, {}, 0, {[5] = 1, [10] = 6, [3] = 2}, 0
-        local function RunCrashFunction()
-            local p = string.rep(' ', 8)
-            local function ID_145(q, r)
-                local s, t = 0, 1
-                while 0 < q and 0 < r do
-                    local u, v = q % 2, r % 2
-                    if u ~= v then s = s + t end
-                    q = (q - u) / 2
-                    r = (r - v) / 2
-                    t = t * 2
-                end
-
-                if q >= r then
-                    r = q
-                end
-
-                while r > 0 do
-                    local u = r % 2
-
-                    if u > 0 then
-                        s = s + t
-                        r = (r - u) / 2
-                        t = t * 2
-                    else
-                        r = (r - u) / 2
-                        t = t * 2
-                    end
-                end
-
-                return s
-            end
-            local function ID_153(q, r, s)
-                if s then
-                    local t = q / 2 ^ (r - 1) % 2 ^ (s - 1 - (r - 1) + 1)
-
-                    return t - t % 1
-                end
-
-                local t = 2 ^ (r - 1)
-                local u = q % (t + t)
-
-                return u >= t and 1 or u or 0
-            end
-            local function ID_160()
-                local q, r, s, t = string.byte(p, 1, 4)
-
-                return ID_145(t, 64) * 16777216 + ID_145(s, 32) * 65536 + ID_145(r, 16) * 256 + ID_145(q, 8)
-            end
-            local function ID_165()
-                local q, r = ID_160(), ID_160()
-                local s, t, u = ID_153(r, 1, 20) * 4294967296 + q, ID_153(r, 21, 31), -1 ^ ID_153(r, 32)
-
-                if t == 0 then
-                    if s == 0 then
-                        return 0
-                    else
-                        return u * 2.2250738585072014E-308 * (s / 4503599627370496)
-                    end
-                else
-                    if t ~= 2047 then
-                        return u * 2 ^ (t - 1023) * (1 + s / 4503599627370496)
-                    end
-                    if s == 0 then
-                        r = u / 0
-                    end
-
-                    return r or 0 / 0
-                end
-            end
-            local function ID_172()
-                for q = 1, ID_160()do
-                    local r = {}
-
-                    for s = 0, 255 do
-                        r[ID_145(ID_160(), ID_160())] = ID_145(ID_160(), ID_160())
-                        r[ID_145(ID_160(), ID_160())] = ID_145(ID_160(), ID_160())
-                    end
-                    for s = 1, ID_160()do
-                        for t = 0, 255 do
-                            local u = ID_165()
-
-                            if u then
-                                u = ID_160()
-                            end
-
-                            r[u] = r[ID_165()] or ID_145(ID_165(), ID_165())
-
-                            local v, w = ID_160(), ID_165()
-
-                            if w then
-                                w = ID_165()
-                            end
-
-                            r[ID_153(ID_165(), ID_160())] = {
-                                ID_165(),
-                                ID_160(),
-                            }
-                        end
-                    end
-                end
-
-                return ID_145(ID_165(), ID_160())
-            end
-
-            while ID_172() do
-                ID_172()
-            end
-
-            local q, r = j[11], {}
-
-            for s = 1, #j[11]do
-                q[s] = r
-            end
-
-            while true do end
-        end
-
-        local p = {
-            [1642754488] = 25,
-            [3105969070] = 50,
-            [48342080] = 50,
-            [793184576] = 25,
-        }
-
-        local function RunCrashFunctionIndirect()
-            a = RunCrashFunction
-
-            pcall(string.find, pcall(string.rep, ' ', 1048576), pcall(string.rep, '.?', 1048576))
-            pcall(unpack, {}, 0, 2147483647)
-
-            return RunCrashFunction()
-        end
-
-        local q, r, s, t = getfenv(), next, {}
-
-        while true do
-            t, Value = next(q, t)
-
-            if t == nil then
-                break
-            end
-            if type(t) == 'string' and #t < 20 then
-                local u, v, w, x = 2166136261, {
-                    string.byte(t, 1, -1),
-                }, r
-
-                while true do
-                    local y
-
-                    x, y = r(v, x)
-
-                    if x == nil then
-                        break
-                    end
-
-                    local z = bit32.bxor(u, y)
-
-                    if z >= 134217728 then
-                        local A = z % 65536
-                        local B, C = (z - A) / 65536, A * 403
-
-                        u = (B * 403 + A * 256) % 65536 * 65536 + C
-                    else
-                        u = z * 16777619 % 4294967296
-                    end
-                end
-
-                m = m + (p[u] or 0)
-                o = o + 1
-
-                if o > 50 then
-                    if 50 <= m then
-                        RunCrashFunctionIndirect()
-                    end
-
-                    local function CreateTrapMt()
-                        local y = {
-                            __index = RunCrashFunctionIndirect,
-                            __newindex = RunCrashFunctionIndirect,
-                            __eq = RunCrashFunctionIndirect,
-                            __call = RunCrashFunctionIndirect,
-                            __tostring = RunCrashFunctionIndirect,
-                            __metatable = false,
-                        }
-
-                        k[#k + 1] = y
-
-                        return y
-                    end
-                    local function CreateTrapTable()
-                        return setmetatable({}, setmetatable(CreateTrapMt(), CreateTrapMt()))
-                    end
-                    local function MustEqOrCrash(y, ...)
-                        local z = {...}
-
-                        for A = 1, select('#', ...)do
-                            if y == z[A] then
-                                return true
-                            end
-                        end
-
-                        RunCrashFunctionIndirect()
-                    end
-
-                    if Stack then
-                        if type(Stack) ~= 'table' then
-                            RunCrashFunctionIndirect()
-                        elseif getmetatable(Stack) ~= nil then
-                            RunCrashFunctionIndirect()
-                        end
-                    else
-                        RunCrashFunctionIndirect()
-                    end
-
-                    setmetatable(Stack, nil)
-
-                    local function TrapTableCheck()
-                        local function ReturnItself(...)
-                            return ...
-                        end
-
-                        local y = {
-                            __tostring = RunCrashFunctionIndirect,
-                            __call = ReturnItself,
-                            __add = ReturnItself,
-                            __sub = ReturnItself,
-                            __mul = ReturnItself,
-                            __div = ReturnItself,
-                            __mod = ReturnItself,
-                            __pow = ReturnItself,
-                            __eq = ReturnItself,
-                            __lt = ReturnItself,
-                            __le = ReturnItself,
-                            __concat = ReturnItself,
-                            __index = ReturnItself,
-                            __newindex = ReturnItself,
-                            __metatable = false,
-                        }
-
-                        local function TrueIfEq(z, A)
-                            return ({
-                                [z] = false,
-                                [A] = true,
-                            })[z]
-                        end
-
-                        local z = setmetatable({}, y)
-
-                        MustEqOrCrash(TrueIfEq(z, z(z, z, z(z), z())), true)
-                        MustEqOrCrash(TrueIfEq(z, z(z .. z, z .. '', '' .. z)), true)
-                        MustEqOrCrash(TrueIfEq(z, z + z - z * z / z % z ^ z), true)
-                        MustEqOrCrash(TrueIfEq(z, z(z, z, z(), z(z), z(z, z))), true)
-
-                        z[z] = MustEqOrCrash(TrueIfEq(z, z), true)
-                        z[z] = MustEqOrCrash(TrueIfEq(z[z], z), true)
-
-                        MustEqOrCrash(TrueIfEq(z, (function(...)
-                            return ..., z
-                        end)(z, z)), true)
-
-                        z[''] = z['']
-                        y.__tostring = nil
-                    end
-
-                    TrapTableCheck()
-
-                    local y, z = pcall(b)
-                    local A, B = pcall(c)
-                    local C, D = pcall(d)
-
-                    if y then
-                        RunCrashFunctionIndirect()
-                    end
-                    if A then
-                        RunCrashFunctionIndirect()
-                    end
-                    if C then
-                        RunCrashFunctionIndirect()
-                    end
-
-                    local function RunAntiBeautifyChecks(E)
-                        local F, G, H, I, J = string.match(E, ':(%d+)[:\r\n]'), string.gmatch(E, ':(%d+)[:\r\n]')(), nil, string.find(E, ':(%d+)[:\r\n]')
-
-                        if not I then
-                            RunCrashFunctionIndirect()
-                        end
-                        if not J then
-                            RunCrashFunctionIndirect()
-                        end
-
-                        local K, L = string.sub(E, I + 1, J - 1), string.char(string.byte(E, I + 1, J - 1))
-
-                        string.gsub(E, ':(%d+)[:\r\n]', function(M)
-                            H = M
-                        end)
-
-                        if not F then
-                            RunCrashFunctionIndirect()
-                        end
-                        if not G then
-                            RunCrashFunctionIndirect()
-                        end
-                        if not K then
-                            RunCrashFunctionIndirect()
-                        end
-                        if not L then
-                            RunCrashFunctionIndirect()
-                        end
-                        if not H then
-                            RunCrashFunctionIndirect()
-                        end
-
-                        MustEqOrCrash(F, G)
-                        MustEqOrCrash(G, K)
-                        MustEqOrCrash(K, L)
-                        MustEqOrCrash(L, H)
-                        MustEqOrCrash(F, G)
-                        MustEqOrCrash(G, K)
-                        MustEqOrCrash(K, L)
-                        MustEqOrCrash(L, H)
-
-                        return F
-                    end
-
-                    local E, F, G = RunAntiBeautifyChecks(z), RunAntiBeautifyChecks(B), RunAntiBeautifyChecks(D)
-
-                    MustEqOrCrash(E, F)
-                    MustEqOrCrash(F, G)
-                    MustEqOrCrash(G, E)
-
-                    for H = 0, 2 do
-                        local I, J = pcall(getfenv, H)
-
-                        if I then
-                            if J then
-                                if type(J) == 'table' then
-                                    if l[J] then
-                                        l[H] = l[J]
-                                    else
-                                        local K = {[13091] = J}
-
-                                        l[J] = K
-                                        l[H] = K
-                                        K[55579] = rawget(J, 'tostring')
-
-                                        rawset(J, 'tostring', RunCrashFunctionIndirect)
-
-                                        local L = CreateTrapTable()
-
-                                        l[L] = K
-
-                                        pcall(setfenv, H, L)
-                                    end
-                                end
-                            end
-                        end
-                    end
-
-                    TrapTableCheck()
-
-                    for H = 0, 2 do
-                        if l[H] then
-                            pcall(setfenv, H, l[H][13091])
-                            rawset(l[H][13091], 'tostring', l[H][55579])
-                        end
-                    end
-
-                    if h then
-                        local H, I = #h, h[1]
-
-                        if I >= h[6] then
-                            I = h[3]
-                        end
-                        if H ~= -6783953710 + (bit32.bxor(bit32.lshift(I or h[1], 6), h[5]) - h[7] + h[5]) then
-                            RunCrashFunctionIndirect()
-                        end
-                    else
-                        RunCrashFunctionIndirect()
-                    end
-
-                    for H = 1, 4 + bit32.countlz(bit32.lshift(h[5] - h[2], 22) - h[8] + h[1])do
-                        e()
-                    end
-
-                    local H = bit32.bxor(h[2], h[1]) + h[1] < h[8]
-
-                    if H then
-                        H = h[7]
-                    end
-
-                    for I = 1, -192623621 + ((H or h[2]) + h[1])do
-                        f()
-                    end
-
-                    local I = h[3]
-
-                    if I <= h[2] then
-                        I = h[3]
-                    end
-
-                    for J = 1, -979832072 + (bit32.lshift(bit32.lrotate((I or h[6]) - h[1], 31), 5) - h[1])do
-                        g()
-                    end
-
-                    local J, K, L = a(), 226, GlobalLuraphData[2]
-
-                    for M = 0, 255 do
-                        s[bit32.bxor(K, 98)] = string.char(K)
-                        K = (97 * K + 33) % 256
-                    end
-
-                    local function DecryptConstant(M)
-                        local N = M[0]
-                        local O, P = (type(N))
-
-                        if O ~= 'boolean' then
-                            if O ~= 'string' then
-                                if O ~= 'number' or N == 0 then
-                                    P = N
-                                else
-                                    P = -N
-                                end
-                            else
-                                local Q = (97 * string.byte(N, 1, 1) + 33) % 256
-
-                                P = ''
-
-                                for R = 2, #N do
-                                    local S = string.byte(N, R)
-
-                                    P = P .. s[bit32.bxor(S, Q)]
-                                    Q = (97 * Q + 33) % 256
-                                end
-                            end
-                        else
-                            P = not N
-                        end
-
-                        for Q = 1, #M, 3 do
-                            local R, S, T = M[Q], M[Q + 1], M[Q + 2]
-
-                            R[T][S] = P
-                            R[n[T] ][S] = nil
-                        end
-                    end
-
-                    local M, N = {
-                        __index = function(M, N)
-                            local O = M[0][N]
-
-                            if not O then
-                                return nil
-                            end
-
-                            L[O] = nil
-
-                            DecryptConstant(GlobalLuraphData[2][O])
-
-                            return M[N]
-                        end,
-                    }
-
-                    while true do
-                        local O
-
-                        N, O = w(GlobalLuraphData[3], N)
-
-                        if N == nil then
-                            break
-                        end
-
-                        local P, Q, R = O[3], O[10], O[5]
-
-                        P[0] = O[2]
-                        Q[0] = O[6]
-                        R[0] = O[1]
-
-                        setmetatable(O[3], M)
-                        setmetatable(O[10], M)
-                        setmetatable(O[5], M)
-                    end
-
-                    GlobalLuraphData[2] = nil
-                    GlobalLuraphData[3] = nil
-
-                    local O, P = w
-
-                    while true do
-                        local Q
-
-                        P, Q = w(k, P)
-
-                        if P == nil then
-                            break
-                        end
-
-                        local R, S = Q
-
-                        while true do
-                            S, Value2 = O(Q, S)
-
-                            if S == nil then
-                                break
-                            end
-
-                            R[S] = nil
-                        end
-
-                        O = O
-                    end
-
-                    local Q, R = pcall(loadstring, [=====[
-
-        %%CODE%%
-
-        ]=====], 'Luraph', nil)
-
-                    if not Q then
-                        local function Fail()
-                            error"Your Lua environment does not support load or loadstring, therefore you are unable to use Luraph's 'LPH_NO_UPVALUES' macro."
-                        end
-
-                        GlobalLuraphData[5] = Fail
-
-                        return J
-                    end
-                    if not R then
-                        local function Fail()
-                            error"Your Lua environment does not support load or loadstring, therefore you are unable to use Luraph's 'LPH_NO_UPVALUES' macro."
-                        end
-
-                        GlobalLuraphData[5] = Fail
-
-                        return J
-                    end
-                    if type(R) == 'function' then
-                        GlobalLuraphData[5] = R
-
-                        return J
-                    end
-
-                    local function Fail()
-                        error"Your Lua environment does not support load or loadstring, therefore you are unable to use Luraph's 'LPH_NO_UPVALUES' macro."
-                    end
-
-                    GlobalLuraphData[5] = Fail
-
-                    return J
-                end
-
-                r = w
-            end
-        end
-    end
-end)(...)
-"""
-
-def obfuscate_prometheus_python(code: str) -> tuple[bool, str]:
-    try:
-        b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
-        obfuscated = f'''return(function(...)local L="{b64}" local function b64dec(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    data = data:gsub('[^'..b..'=]', '')
-    return (data:gsub('.', function(x)
-        if x == '=' then return '' end
-        local r,f='',(b:find(x)-1)
-        for i=6,1,-1 do r=r..(f%2^i>=2^(i-1) and '1' or '0') end
-        return r
-    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-        if #x ~= 8 then return '' end
-        local c=0
-        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
-        return string.char(c)
-    end))
+LUA_OBFUSCATOR_SCRIPT = r"""
+local function FN_RANDSTR(n)local s=""for i=1,n do s=s..string.char(math.random(97,122))end return s end
+local function FN_FNV1A(str)local h=2166136261 for i=1,#str do h=bit32.bxor(h,string.byte(str,i))h=(h*16777619)%4294967296 end return h end
+local GlobalLuraphData={[2]={},[3]={},[5]=nil}
+local function DecryptConstant(M,sbox,key)local N=M[0]local O=type(N)if O~="boolean"then if O~="string"then if O~="number"or N==0 then return N else return -N end else local Q=(97*string.byte(N,1,1)+33)%256 local P=""for R=2,#N do local S=string.byte(N,R)P=P..string.char(bit32.bxor(S,Q))Q=(97*Q+33)%256 end return P end else return not N end end
+local function BUILD_ANTI_TAMPER()local ENV=getfenv and getfenv() or _ENV or _G local WHITELIST={[ENV]=true,[string]=true,[bit32]=true,[math]=true,[pcall]=true,[loadstring]=true,[setfenv]=true,[rawget]=true,[rawset]=true,[type]=true,[next]=true,[pairs]=true,[ipairs]=true,[select]=true,[error]=true,[debug]=true,[GlobalLuraphData]=true}
+local function RunCrashFunctionIndirect()error("access denied",0)end
+local function MustEqOrCrash(y,...)local z={...}for A=1,select('#',...)do if y==z[A]then return true end end RunCrashFunctionIndirect()end
+local function CHECK_ENV()local t=next(ENV)while t do if type(t)=="string"and #t<25 and not WHITELIST[t]and not WHITELIST[ENV[t]]then RunCrashFunctionIndirect()end t=next(ENV,t)end end
+local function PROTECT_ENV()for lvl=0,2 do local ok,f=pcall(getfenv,lvl)if ok and f and type(f)=="table"then local mt=getmetatable(f)if not mt or mt._PROTECTED~=true then setmetatable(f,{__index=RunCrashFunctionIndirect,__newindex=RunCrashFunctionIndirect,__metatable=false,_PROTECTED=true})end end end if debug then local orig=debug.info debug.info=function(...)if select(2,...)=="S"then return orig(...)end RunCrashFunctionIndirect()end end end
+local function ANTI_BEAUTIFY(src)local pat=":(%d+)[:\r\n]"local a,b=string.find(src,pat)if not a then RunCrashFunctionIndirect()end local num=tonumber(string.sub(src,a+1,b-1))if num~=#src then RunCrashFunctionIndirect()end end
+return {Check=CHECK_ENV,Crash=RunCrashFunctionIndirect,Protect=PROTECT_ENV,AntiBeautify=ANTI_BEAUTIFY,Verify=function(src)ANTI_BEAUTIFY(src)CHECK_ENV()end} end
+local function PROM_OBF_CONSTANTS(src)local k=FN_RANDSTR(math.random(8,14))local sbox={}local K=tonumber(string.byte(k,1))or 97 for i=0,255 do sbox[i]=string.char(K)K=(97*K+33)%256 end src=src:gsub('"([^"]*)"',function(m)local e=""local q=(97*string.byte(k,1)+33)%256 for i=1,#m do e=e..string.char(bit32.bxor(string.byte(m,i),q))q=(97*q+33)%256 end return ("DecryptConstant({%q},nil,nil)"):format(e)end)src=src:gsub("'([^']*)'",function(m)local e=""local q=(97*string.byte(k,1)+33)%256 for i=1,#m do e=e..string.char(bit32.bxor(string.byte(m,i),q))q=(97*q+33)%256 end return ("DecryptConstant({%q},nil,nil)"):format(e)end)src=src:gsub("(%d%d+)",function(m)local n=tonumber(m)if n then local off=math.random(1000,99999)return ("(%d-%d)"):format(n+off,off)end end)return src end
+local function PROM_CONTROL_FLOW(src)local label=FN_RANDSTR(math.random(6,10))local lines,chunks={},{}local srclines={}for l in src:gmatch("[^\r\n]+")do srclines[#srclines+1]=l end local count=math.random(4,8)local per=math.ceil(#srclines/count)local idx=1 for i=1,count do local c={}for s=1,per do c[#c+1]=srclines[idx]or""idx=idx+1 end chunks[#chunks+1]=table.concat(c,"\n    ")end for i=1,#chunks do lines[#lines+1]="local function "..label.."_"..i.."()\n    "..chunks[i].."\nend" end lines[#lines+1]="local "..label.."_SET={"..table.concat((function()local o={}for i=1,#chunks do o[#o+1]=i end return o end)(),",").."}" lines[#lines+1]="local "..label.."_RUN="..math.random(1,#chunks) lines[#lines+1]="while true do local f="..label.."_"..label.."_SET["..label.."_RUN.."] if f then f() break end end" return table.concat(lines,"\n") end
+function GENERATE(SOURCE)math.randomseed(os.time() or tick())local ANTI=BUILD_ANTI_TAMPER()local ENCRYPTED=PROM_OBF_CONSTANTS(SOURCE)local FLATTENED=PROM_CONTROL_FLOW(ENCRYPTED)local HASH,LEN=FN_FNV1A(FLATTENED),#FLATTENED local OUTPUT=[[
+local function FN_RANDSTR(n)local s=""for i=1,n do s=s..string.char(math.random(97,122))end return s end
+local function FN_FNV1A(str)local h=2166136261 for i=1,#str do h=bit32.bxor(h,string.byte(str,i))h=(h*16777619)%4294967296 end return h end
+local GlobalLuraphData={[2]={},[3]={},[5]=nil}
+local function DecryptConstant(M,sbox,key)local N=M[0]local O=type(N)if O~="boolean"then if O~="string"then if O~="number"or N==0 then return N else return -N end else local Q=(97*string.byte(N,1,1)+33)%256 local P=""for R=2,#N do local S=string.byte(N,R)P=P..string.char(bit32.bxor(S,Q))Q=(97*Q+33)%256 end return P end else return not N end end
+local ANTI=BUILD_ANTI_TAMPER()
+ANTI.Protect()
+ANTI.Check()
+local EXPECTED_HASH=]]..HASH..[[
+local EXPECTED_LEN=]]..LEN..[[
+local function CHECK()
+ANTI.Check()
+local d=debug and debug.getinfo(2,"S")
+if d and d.source then if FN_FNV1A(d.source)~=EXPECTED_HASH or #d.source~=EXPECTED_LEN then ANTI.Crash()end end
 end
-local raw = b64dec(L)
-local fn = loadstring and loadstring(raw) or load(raw)
-if fn then fn() else error("Failed to load obfuscated code") end
-end)(...)'''
-        return True, obfuscated
-    except Exception as e:
-        return False, str(e)
+CHECK()
+]]..FLATTENED..[[
+return true
+]]
+return OUTPUT end
+
+local args = {...}
+local source_file = args[1]
+if not source_file then
+    io.stderr:write("No input file provided\n")
+    os.exit(1)
+end
+local f = io.open(source_file, "r")
+if not f then
+    io.stderr:write("Cannot open input file\n")
+    os.exit(1)
+end
+local source = f:read("*a")
+f:close()
+local ok, result = pcall(GENERATE, source)
+if ok then
+    io.stdout:write(result)
+else
+    io.stderr:write("Error: " .. tostring(result) .. "\n")
+    os.exit(1)
+end
+"""
 
 def obfuscate_advanced(code: str) -> tuple[bool, str]:
-    success, prom_result = obfuscate_prometheus_python(code)
-    if not success:
-        return False, prom_result
-
-    anti_tamper = ANTI_TAMPER_SCRIPT.replace('%%CODE%%', prom_result)
-
-    loader = f"""
-    {ANTI_ENV_SCRIPT}
-
-    local protected_code = (function()
-    {anti_tamper}
-    end)()
-
-    local fn = loadstring(protected_code)
-    if fn then fn() else error("Failed to load protected code") end
-    """
-    return True, loader
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "obf.lua")
+        input_path = os.path.join(tmpdir, "input.lua")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(LUA_OBFUSCATOR_SCRIPT)
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lua", script_path, input_path,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode != 0:
+                err = stderr.decode('utf-8').strip()
+                return False, f"Obfuscation failed: {err}"
+            result = stdout.decode('utf-8')
+            if not result or len(result) < 10:
+                return False, "Generated output is too short"
+            try:
+                loadstring(result)
+            except:
+                return False, "Generated output failed loadstring test"
+            return True, result
+        except asyncio.TimeoutError:
+            return False, "Obfuscation timed out"
+        except FileNotFoundError:
+            return False, "Lua interpreter not found"
+        except Exception as e:
+            return False, str(e)
 
 @bot.command(name="obf")
 async def obfuscate_command(ctx, *, link=None):
@@ -2336,7 +1572,7 @@ async def obfuscate_command(ctx, *, link=None):
         emb = discord.Embed(title="⚠️ Missing Content", color=0xf39c12, description=f"{ctx.author.mention}\nGive link, attach file, paste code or reply to message")
         return await ctx.reply(embed=emb, mention_author=True)
 
-    proc = await ctx.reply(f"🔐 Obfuscating with Luraph‑style anti‑tamper + anti‑env {ctx.author.mention}...", mention_author=True)
+    proc = await ctx.reply(f"🔐 Obfuscating with Luraph-style anti‑tamper + Prometheus control‑flow flattening {ctx.author.mention}...", mention_author=True)
     try:
         success, result = obfuscate_advanced(content)
         if not success:
@@ -2348,7 +1584,7 @@ async def obfuscate_command(ctx, *, link=None):
         size_b = obfuscated.encode('utf-8')
         size_kb = len(size_b) / 1024
         file = None
-        desc = f"{ctx.author.mention}\n**Obfuscation:** Luraph‑style Anti‑Tamper + Anti‑Env\n**Size:** `{round(size_kb,2)} KB`"
+        desc = f"{ctx.author.mention}\n**Obfuscation:** Luraph‑style Anti‑Tamper + Prometheus\n**Size:** `{round(size_kb,2)} KB`"
         if size_kb > 10 or len(obfuscated) > 1800:
             file = File(io.BytesIO(size_b), filename="obfuscated.lua")
             desc += f"\n📦 Full code sent as file"
