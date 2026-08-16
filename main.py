@@ -77,6 +77,7 @@ active_checker_col = None
 auto_delete_config_col = None
 verified_users_col = None
 timer_delete_config_col = None
+talking_bot_config_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -91,6 +92,7 @@ try:
     auto_delete_config_col = db["auto_delete_config"]
     verified_users_col = db["verified_users"]
     timer_delete_config_col = db["timer_delete_config"]
+    talking_bot_config_col = db["talking_bot_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -191,8 +193,47 @@ async def on_message(message):
             if duration:
                 reset_timer_delete_timer(message.channel.id, duration)
 
+    if talking_bot_config_col is not None:
+        config = await asyncio.to_thread(talking_bot_config_col.find_one, {"guild_id": message.guild.id, "channel_id": message.channel.id})
+        if config:
+            asyncio.create_task(handle_talking_bot(message))
+
     if message.content.startswith("."):
         await bot.process_commands(message)
+
+async def handle_talking_bot(message):
+    try:
+        if message.author.bot:
+            return
+        content = message.content.lower()
+        responses = {
+            r'\bhello\b': "Hello there! How can I assist you with Lua or Roblox exploits today?",
+            r'\bhi\b': "Hi! I'm here to help with Lua coding and exploit questions.",
+            r'\blua\b': "Lua is a powerful, lightweight scripting language used in Roblox. Need help with a specific script?",
+            r'\bexploit\b': "Exploits like Delta can be tricky. Always ensure you're using trusted sources. What's your question?",
+            r'\bdelta\b': "Delta is a popular Roblox executor. It supports many scripts and has a built-in decompiler. What would you like to know?",
+            r'\bscript\b': "I can help write or debug Lua scripts. Paste your code and I'll take a look.",
+            r'\bhow to\b': "Let me guide you step by step. Be specific about what you're trying to achieve.",
+            r'\berror\b': "Errors are common. Share the error message and I'll help you fix it.",
+            r'\bdeobfuscate\b': "I can deobfuscate Prometheus, WeAreDevs, and many other obfuscators. Try my `.get` command.",
+            r'\bobfuscate\b': "I used to obfuscate, but now I focus on helping with code and exploits. What do you need?",
+            r'\bticket\b': "For support tickets, use the `/ticket` command to create a ticket panel.",
+            r'\bverify\b': "To verify, visit the website or use `/verification_system` to set it up.",
+            r'\bbypass\b': "I can help bypass Delta links. Use `/bypass` with the URL.",
+            r'\bauto[- ]delete\b': "I have both instant and timer-based auto-delete. Use `/auto_delete_messages` or `/timer_delete_msg`.",
+            r'\bactive[- ]checker\b': "Set up active pings with `/active_checker`.",
+            r'\bhelp\b': "I'm here to help! Ask me anything about Lua, exploits, or my commands.",
+        }
+        for pattern, reply in responses.items():
+            if re.search(pattern, content):
+                await message.reply(reply, mention_author=True)
+                return
+        if len(content) > 10 and "?" in content:
+            await message.reply("That's a good question! Could you be more specific? I'm here to help.", mention_author=True)
+        else:
+            await message.reply("I'm listening! Feel free to ask about Lua, exploits, or any of my commands.", mention_author=True)
+    except Exception as e:
+        print(f"Talking bot error: {e}")
 
 @bot.tree.command(name="active_checker", description="Set up an active checker that pings @everyone periodically")
 @app_commands.describe(
@@ -1029,6 +1070,44 @@ async def timer_delete_msg(
     embed.set_footer(text=f"Duration: {duration}s")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="talking_bot", description="Enable a talking bot that replies in a specific channel")
+@app_commands.describe(
+    channel="The channel where the bot will reply",
+    disable="Set to True to disable the talking bot for this channel"
+)
+@app_commands.default_permissions(administrator=True)
+async def talking_bot(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    disable: bool = False
+):
+    guild_id = interaction.guild.id
+    channel_id = channel.id
+
+    if disable:
+        await asyncio.to_thread(talking_bot_config_col.delete_one, {"guild_id": guild_id, "channel_id": channel_id})
+        embed = discord.Embed(
+            title="⏹️ Talking Bot Disabled",
+            description=f"The talking bot has been disabled for {channel.mention}.",
+            color=0x90EE90
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    await asyncio.to_thread(talking_bot_config_col.update_one,
+        {"guild_id": guild_id, "channel_id": channel_id},
+        {"$set": {"enabled": True}},
+        upsert=True
+    )
+
+    embed = discord.Embed(
+        title="✅ Talking Bot Enabled",
+        description=f"I will now reply to messages in {channel.mention}.\n"
+                    f"I can answer questions about Lua, exploits, Delta, and my commands.",
+        color=0x90EE90
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -1170,7 +1249,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add channel for instant message deletion (admin)\n`/atd_view_channel` – View instant delete channels\n`/atd_remove_channel` – Remove instant delete channel (admin)\n`/timer_delete_msg` – Set up timer-based auto-delete (admin)",
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Instant message deletion (admin)\n`/atd_view_channel` – View instant delete channels\n`/atd_remove_channel` – Remove instant delete channel (admin)\n`/timer_delete_msg` – Timer-based auto-delete (admin)\n`/talking_bot` – Enable talking bot in a channel (admin)",
                 "inline": False},
             ]
         }
@@ -2110,7 +2189,7 @@ async def on_ready():
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | /timer_delete* | .get"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | /timer_delete* | /talking_bot | .get"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
