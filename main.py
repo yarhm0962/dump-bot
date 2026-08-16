@@ -76,7 +76,7 @@ verification_config_col = None
 active_checker_col = None
 auto_delete_config_col = None
 verified_users_col = None
-auto_delete_msg_config_col = None
+timer_delete_config_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -90,7 +90,7 @@ try:
     active_checker_col = db["active_checker_config"]
     auto_delete_config_col = db["auto_delete_config"]
     verified_users_col = db["verified_users"]
-    auto_delete_msg_config_col = db["auto_delete_msg_config"]
+    timer_delete_config_col = db["timer_delete_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -137,9 +137,9 @@ async def clear_allowed_channel():
     if settings_col is not None:
         await asyncio.to_thread(settings_col.delete_one, {"key": "command_channel"})
 
-auto_delete_msg_timers = {}
+timer_delete_timers = {}
 
-async def start_auto_delete_timer(channel_id, duration_seconds):
+async def start_timer_delete_timer(channel_id, duration_seconds):
     while True:
         await asyncio.sleep(duration_seconds)
         channel = bot.get_channel(channel_id)
@@ -150,23 +150,23 @@ async def start_auto_delete_timer(channel_id, duration_seconds):
             count = len(deleted)
             if count > 0:
                 embed = discord.Embed(
-                    title="🧹 Auto-Delete Triggered",
+                    title="🧹 Timer Delete Triggered",
                     description=f"Deleted **{count}** messages in {channel.mention} due to inactivity.",
-                    color=0x1e90ff
+                    color=0x90EE90
                 )
                 embed.set_footer(text=f"Timer: {duration_seconds}s")
                 await channel.send(embed=embed)
         except discord.Forbidden:
             break
         except Exception as e:
-            print(f"Auto-delete error in {channel_id}: {e}")
+            print(f"Timer delete error in {channel_id}: {e}")
             break
 
-def reset_auto_delete_timer(channel_id, duration_seconds):
-    if channel_id in auto_delete_msg_timers:
-        auto_delete_msg_timers[channel_id].cancel()
-    task = asyncio.create_task(start_auto_delete_timer(channel_id, duration_seconds))
-    auto_delete_msg_timers[channel_id] = task
+def reset_timer_delete_timer(channel_id, duration_seconds):
+    if channel_id in timer_delete_timers:
+        timer_delete_timers[channel_id].cancel()
+    task = asyncio.create_task(start_timer_delete_timer(channel_id, duration_seconds))
+    timer_delete_timers[channel_id] = task
 
 @bot.event
 async def on_message(message):
@@ -184,12 +184,12 @@ async def on_message(message):
                 pass
             return
 
-    if auto_delete_msg_config_col is not None:
-        config = await asyncio.to_thread(auto_delete_msg_config_col.find_one, {"guild_id": message.guild.id, "channel_id": message.channel.id})
+    if timer_delete_config_col is not None:
+        config = await asyncio.to_thread(timer_delete_config_col.find_one, {"guild_id": message.guild.id, "channel_id": message.channel.id})
         if config:
             duration = config.get("duration_seconds")
             if duration:
-                reset_auto_delete_timer(message.channel.id, duration)
+                reset_timer_delete_timer(message.channel.id, duration)
 
     if message.content.startswith("."):
         await bot.process_commands(message)
@@ -959,17 +959,38 @@ async def apply_verification_roles(interaction, guild, not_verified_role, verifi
     except discord.HTTPException:
         pass
 
-@bot.tree.command(name="auto_delete_msg", description="Set up auto-delete for a channel with a cooldown timer")
+@bot.tree.command(name="timer_delete_msg", description="Set up a timer-based auto-delete for a channel")
 @app_commands.describe(
     channel="The text channel to monitor",
-    time="Cooldown duration (e.g., 10s, 5m, 1h, 1d)"
+    time="Cooldown duration (e.g., 10s, 5m, 1h, 1d)",
+    disable="Set to True to disable the timer delete for this channel"
 )
 @app_commands.default_permissions(administrator=True)
-async def auto_delete_msg(
+async def timer_delete_msg(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
-    time: str
+    time: str = None,
+    disable: bool = False
 ):
+    if disable:
+        guild_id = interaction.guild.id
+        channel_id = channel.id
+        await asyncio.to_thread(timer_delete_config_col.delete_one, {"guild_id": guild_id, "channel_id": channel_id})
+        if channel_id in timer_delete_timers:
+            timer_delete_timers[channel_id].cancel()
+            del timer_delete_timers[channel_id]
+        embed = discord.Embed(
+            title="⏹️ Timer Delete Disabled",
+            description=f"Timer delete has been disabled for {channel.mention}.",
+            color=0x90EE90
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    if not time:
+        await interaction.response.send_message("❌ Please provide a time duration when enabling timer delete.", ephemeral=True)
+        return
+
     try:
         duration = parse_duration(time)
     except ValueError as e:
@@ -991,19 +1012,19 @@ async def auto_delete_msg(
     guild_id = interaction.guild.id
     channel_id = channel.id
 
-    await asyncio.to_thread(auto_delete_msg_config_col.update_one,
+    await asyncio.to_thread(timer_delete_config_col.update_one,
         {"guild_id": guild_id, "channel_id": channel_id},
         {"$set": {"duration_seconds": duration}},
         upsert=True
     )
 
-    reset_auto_delete_timer(channel_id, duration)
+    reset_timer_delete_timer(channel_id, duration)
 
     embed = discord.Embed(
-        title="✅ Auto-Delete Set Up",
+        title="✅ Timer Delete Set Up",
         description=f"Messages in {channel.mention} will be deleted after **{time}** of inactivity.\n"
                     f"Any new message resets the timer.",
-        color=0x1e90ff
+        color=0x90EE90
     )
     embed.set_footer(text=f"Duration: {duration}s")
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -1149,7 +1170,8 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)\n`/auto_delete_msg` – Set up auto-delete with cooldown (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add channel for instant message deletion (admin)\n`/atd_view_channel` – View instant delete channels\n`/atd_remove_channel` – Remove instant delete channel (admin)\n`/timer_delete_msg` – Set up timer-based auto-delete (admin)",
+                "inline": False},
             ]
         }
     ]
@@ -1162,16 +1184,43 @@ async def show_commands(ctx):
         print(f"Failed to send .cmds embed: {e}")
         await ctx.send("An error occurred while displaying the help menu.", mention_author=True)
 
-@bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted")
-@app_commands.describe(channel="The text channel to enable auto-deletion for")
+@bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted instantly")
+@app_commands.describe(
+    channel="The text channel to enable instant deletion for",
+    disable="Set to True to disable instant deletion for this channel"
+)
 @app_commands.default_permissions(administrator=True)
-async def auto_delete_messages(interaction: discord.Interaction, channel: discord.TextChannel):
+async def auto_delete_messages(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    disable: bool = False
+):
     guild_id = interaction.guild.id
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
     channels = config.get("channels", []) if config else []
 
+    if disable:
+        if channel.id not in channels:
+            await interaction.response.send_message(f"❌ {channel.mention} is not in the instant delete list.", ephemeral=True)
+            return
+        channels.remove(channel.id)
+        if channels:
+            await asyncio.to_thread(auto_delete_config_col.update_one,
+                {"guild_id": guild_id},
+                {"$set": {"channels": channels}}
+            )
+        else:
+            await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
+        embed = discord.Embed(
+            title="⏹️ Instant Delete Disabled",
+            description=f"Instant message deletion has been disabled for {channel.mention}.",
+            color=0x90EE90
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
     if channel.id in channels:
-        await interaction.response.send_message(f"❌ {channel.mention} is already in the auto-delete list.", ephemeral=True)
+        await interaction.response.send_message(f"❌ {channel.mention} is already in the instant delete list.", ephemeral=True)
         return
 
     channels.append(channel.id)
@@ -1180,13 +1229,18 @@ async def auto_delete_messages(interaction: discord.Interaction, channel: discor
         {"$set": {"channels": channels}},
         upsert=True
     )
-    await interaction.response.send_message(f"✅ {channel.mention} has been added to auto-delete. All new messages there will be instantly deleted.", ephemeral=True)
+    embed = discord.Embed(
+        title="✅ Instant Delete Set Up",
+        description=f"All new messages in {channel.mention} will be instantly deleted.",
+        color=0x90EE90
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="atd_view_channel", description="View all channels where auto-deletion is active")
+@bot.tree.command(name="atd_view_channel", description="View all channels where instant deletion is active")
 async def atd_view_channel(interaction: discord.Interaction):
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": interaction.guild.id})
     if not config or not config.get("channels"):
-        await interaction.response.send_message("ℹ️ No channels are currently set for auto-deletion.", ephemeral=True)
+        await interaction.response.send_message("ℹ️ No channels are currently set for instant deletion.", ephemeral=True)
         return
 
     channel_ids = config["channels"]
@@ -1198,26 +1252,28 @@ async def atd_view_channel(interaction: discord.Interaction):
         else:
             channel_mentions.append(f"#deleted-channel ({cid})")
     embed = discord.Embed(
-        title="📋 Auto‑Delete Channels",
+        title="📋 Instant Delete Channels",
         description="\n".join(channel_mentions) or "None",
-        color=0x1e90ff
+        color=0x90EE90
     )
     embed.set_footer(text=f"Total: {len(channel_mentions)} channels")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="atd_remove_channel", description="Remove a channel from the auto-delete list")
-@app_commands.describe(channel="The channel to remove from auto-deletion")
+@bot.tree.command(name="atd_remove_channel", description="Remove a channel from the instant delete list")
+@app_commands.describe(
+    channel="The channel to remove from instant deletion"
+)
 @app_commands.default_permissions(administrator=True)
 async def atd_remove_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = interaction.guild.id
     config = await asyncio.to_thread(auto_delete_config_col.find_one, {"guild_id": guild_id})
     if not config or not config.get("channels"):
-        await interaction.response.send_message("❌ No channels are currently set for auto-deletion.", ephemeral=True)
+        await interaction.response.send_message("❌ No channels are currently set for instant deletion.", ephemeral=True)
         return
 
     channels = config["channels"]
     if channel.id not in channels:
-        await interaction.response.send_message(f"❌ {channel.mention} is not in the auto-delete list.", ephemeral=True)
+        await interaction.response.send_message(f"❌ {channel.mention} is not in the instant delete list.", ephemeral=True)
         return
 
     channels.remove(channel.id)
@@ -1228,7 +1284,12 @@ async def atd_remove_channel(interaction: discord.Interaction, channel: discord.
         )
     else:
         await asyncio.to_thread(auto_delete_config_col.delete_one, {"guild_id": guild_id})
-    await interaction.response.send_message(f"✅ {channel.mention} has been removed from auto-delete.", ephemeral=True)
+    embed = discord.Embed(
+        title="✅ Instant Delete Removed",
+        description=f"{channel.mention} has been removed from instant deletion.",
+        color=0x90EE90
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 def decode_base64_urlsafe(data: str) -> str:
     data = data.strip()
@@ -2039,17 +2100,17 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
-    auto_delete_configs = await asyncio.to_thread(auto_delete_msg_config_col.find)
-    for cfg in auto_delete_configs:
+    timer_configs = await asyncio.to_thread(timer_delete_config_col.find)
+    for cfg in timer_configs:
         guild_id = cfg["guild_id"]
         channel_id = cfg["channel_id"]
         duration = cfg.get("duration_seconds")
         if duration:
-            reset_auto_delete_timer(channel_id, duration)
+            reset_timer_delete_timer(channel_id, duration)
 
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | .get | /auto_delete_msg"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | /timer_delete* | .get"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
