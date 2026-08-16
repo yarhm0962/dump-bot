@@ -76,6 +76,7 @@ verification_config_col = None
 active_checker_col = None
 auto_delete_config_col = None
 verified_users_col = None
+auto_delete_msg_config_col = None
 
 try:
     mongo_client = MongoClient(MONGODB_URI, server_api=ServerApi('1'))
@@ -89,6 +90,7 @@ try:
     active_checker_col = db["active_checker_config"]
     auto_delete_config_col = db["auto_delete_config"]
     verified_users_col = db["verified_users"]
+    auto_delete_msg_config_col = db["auto_delete_msg_config"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print(f"❌ MongoDB Error: {e}")
@@ -135,6 +137,37 @@ async def clear_allowed_channel():
     if settings_col is not None:
         await asyncio.to_thread(settings_col.delete_one, {"key": "command_channel"})
 
+auto_delete_msg_timers = {}
+
+async def start_auto_delete_timer(channel_id, duration_seconds):
+    while True:
+        await asyncio.sleep(duration_seconds)
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            break
+        try:
+            deleted = await channel.purge(limit=None)
+            count = len(deleted)
+            if count > 0:
+                embed = discord.Embed(
+                    title="🧹 Auto-Delete Triggered",
+                    description=f"Deleted **{count}** messages in {channel.mention} due to inactivity.",
+                    color=0x1e90ff
+                )
+                embed.set_footer(text=f"Timer: {duration_seconds}s")
+                await channel.send(embed=embed)
+        except discord.Forbidden:
+            break
+        except Exception as e:
+            print(f"Auto-delete error in {channel_id}: {e}")
+            break
+
+def reset_auto_delete_timer(channel_id, duration_seconds):
+    if channel_id in auto_delete_msg_timers:
+        auto_delete_msg_timers[channel_id].cancel()
+    task = asyncio.create_task(start_auto_delete_timer(channel_id, duration_seconds))
+    auto_delete_msg_timers[channel_id] = task
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -150,6 +183,13 @@ async def on_message(message):
             except:
                 pass
             return
+
+    if auto_delete_msg_config_col is not None:
+        config = await asyncio.to_thread(auto_delete_msg_config_col.find_one, {"guild_id": message.guild.id, "channel_id": message.channel.id})
+        if config:
+            duration = config.get("duration_seconds")
+            if duration:
+                reset_auto_delete_timer(message.channel.id, duration)
 
     if message.content.startswith("."):
         await bot.process_commands(message)
@@ -752,8 +792,6 @@ async def verification_system(
 
     async def update_channel_perms(channel_obj):
         if channel_obj == channel:
-            # Verification channel: keep @everyone visible, no role restrictions
-            # Only ensure the bot can send messages and manage the channel if needed
             try:
                 await channel_obj.edit(overwrites={
                     guild.default_role: discord.PermissionOverwrite(view_channel=True),
@@ -762,7 +800,6 @@ async def verification_system(
             except:
                 pass
         else:
-            # All other channels: hide from not-verified, show to verified
             overwrites = {
                 not_verified_role: discord.PermissionOverwrite(view_channel=False),
                 select_role: discord.PermissionOverwrite(view_channel=True)
@@ -922,6 +959,55 @@ async def apply_verification_roles(interaction, guild, not_verified_role, verifi
     except discord.HTTPException:
         pass
 
+@bot.tree.command(name="auto_delete_msg", description="Set up auto-delete for a channel with a cooldown timer")
+@app_commands.describe(
+    channel="The text channel to monitor",
+    time="Cooldown duration (e.g., 10s, 5m, 1h, 1d)"
+)
+@app_commands.default_permissions(administrator=True)
+async def auto_delete_msg(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    time: str
+):
+    try:
+        duration = parse_duration(time)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+
+    if duration < 5:
+        await interaction.response.send_message("❌ Duration must be at least 5 seconds.", ephemeral=True)
+        return
+
+    if not interaction.guild.me.guild_permissions.manage_messages:
+        await interaction.response.send_message("❌ I need 'Manage Messages' permission to delete messages.", ephemeral=True)
+        return
+
+    if not channel.permissions_for(interaction.guild.me).manage_messages:
+        await interaction.response.send_message(f"❌ I don't have permission to manage messages in {channel.mention}.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    channel_id = channel.id
+
+    await asyncio.to_thread(auto_delete_msg_config_col.update_one,
+        {"guild_id": guild_id, "channel_id": channel_id},
+        {"$set": {"duration_seconds": duration}},
+        upsert=True
+    )
+
+    reset_auto_delete_timer(channel_id, duration)
+
+    embed = discord.Embed(
+        title="✅ Auto-Delete Set Up",
+        description=f"Messages in {channel.mention} will be deleted after **{time}** of inactivity.\n"
+                    f"Any new message resets the timer.",
+        color=0x1e90ff
+    )
+    embed.set_footer(text=f"Duration: {duration}s")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.check
 async def global_channel_check(ctx):
     if ctx.author.id == OWNER_ID:
@@ -1063,7 +1149,7 @@ async def show_commands(ctx):
             "title": "RblXLua Bot Commands (2/2)",
             "description": f"Hello {ctx.author.mention}",
             "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)", "inline": False},
+                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Add auto‑delete channel (admin)\n`/atd_view_channel` – View auto‑delete channels\n`/atd_remove_channel` – Remove auto‑delete channel (admin)\n`/auto_delete_msg` – Set up auto-delete with cooldown (admin)", "inline": False},
             ]
         }
     ]
@@ -1953,9 +2039,17 @@ async def on_ready():
         task = asyncio.create_task(active_checker_loop(guild_id, channel_id, interval))
         active_checker_tasks[guild_id] = task
 
+    auto_delete_configs = await asyncio.to_thread(auto_delete_msg_config_col.find)
+    for cfg in auto_delete_configs:
+        guild_id = cfg["guild_id"]
+        channel_id = cfg["channel_id"]
+        duration = cfg.get("duration_seconds")
+        if duration:
+            reset_auto_delete_timer(channel_id, duration)
+
     asyncio.create_task(check_verification_deadlines())
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | .get"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=".cmds | /ping | /channel_* | /ticket | /verification_system | /verify | /active_checker | /bypass | /auto_delete* | .get | /auto_delete_msg"))
     if db is not None:
         print(f"✅ Database Ready: {db.name}")
 
