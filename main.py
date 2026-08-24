@@ -1,20 +1,9 @@
 from flask import Flask, request, jsonify
-import sys
-app = Flask(__name__)
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-@app.route('/')
-def home(): return "✅ RblXLua Service Running"
-@app.route('/ping')
-def ping(): return "pong"
-
 import os
+import sys
+import time
+import asyncio
+import threading
 import discord
 from discord import File, app_commands
 from discord.ext import commands
@@ -27,9 +16,6 @@ import json
 import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
-import asyncio
-import threading
-import time
 import subprocess
 import tempfile
 from urllib.parse import urlparse, parse_qs, quote_plus
@@ -44,6 +30,20 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/')
+def home(): return "✅ RblXLua Service Running"
+@app.route('/ping')
+def ping(): return "pong"
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -2151,34 +2151,40 @@ if __name__ == "__main__":
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    max_retries = 5
-    retries = 0
-    while True:
-        try:
-            bot.run(TOKEN)
-            break
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
+    async def main():
+        retries = 0
+        while True:
+            try:
+                await bot.start(TOKEN)
+                break
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    retries += 1
+                    wait = min(2 ** retries, 60)
+                    print(f"Rate limited (429). Retrying in {wait} seconds...")
+                    await asyncio.sleep(wait)
+                    continue
+                else:
+                    print(f"HTTPException: {e}")
+                    raise
+            except RuntimeError as e:
+                if "Session is closed" in str(e):
+                    print("Session closed – restarting process.")
+                    await asyncio.sleep(5)
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                else:
+                    raise
+            except Exception as e:
+                print(f"Unhandled exception: {e}")
+                if retries >= 5:
+                    print("Too many retries, restarting.")
+                    await asyncio.sleep(5)
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
                 retries += 1
-                wait = min(2 ** retries, 60)
-                print(f"Rate limited (429). Retrying in {wait} seconds...")
-                time.sleep(wait)
-                continue
-            else:
-                print(f"HTTPException: {e}")
-                raise
-        except RuntimeError as e:
-            if "Session is closed" in str(e):
-                print("Session closed – restarting process.")
-                time.sleep(5)
-                continue
-            else:
-                raise
-        except Exception as e:
-            print(f"Unhandled exception: {e}")
-            if retries >= max_retries:
-                print("Too many retries, restarting.")
-                time.sleep(5)
-                continue
-            retries += 1
-            time.sleep(5)
+                await asyncio.sleep(5)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        asyncio.run(bot.close())
