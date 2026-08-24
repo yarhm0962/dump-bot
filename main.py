@@ -2140,18 +2140,15 @@ def keep_alive():
         time.sleep(300)
 
 if __name__ == "__main__":
-    # Start Flask in a background daemon thread
     from threading import Thread
     def run_flask():
         app.run(host="0.0.0.0", port=10000, threaded=True)
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Start a keep-alive thread (optional)
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    # Run the bot – if it fails, exit so Render restarts
     try:
         bot.run(TOKEN)
     except Exception as e:
