@@ -782,9 +782,10 @@ def parse_duration(duration_str: str) -> int:
 def get_verification_view():
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
-        label="Verify on Website",
-        style=discord.ButtonStyle.link,
-        url="https://rblxlua-verification.pages.dev"
+        label="Verify",
+        style=discord.ButtonStyle.primary,
+        custom_id="verify_button",
+        emoji="✅"
     ))
     return view
 
@@ -880,8 +881,7 @@ async def verification_system(
         title="🔐 Server Verification",
         description=(
             "Welcome to the server! We are glad to Have you here.\n\n"
-            "To gain access to all the channels and features, please verify yourself by clicking the **Verify on Website** button below.\n"
-            "You will be redirected to our verification page where you must complete a short challenge.\n"
+            "To gain access to all the channels and features, please verify yourself by clicking the **Verify** button below.\n"
             "This helps us keep the server safe and secure."
         ),
         color=0x1e90ff
@@ -1182,86 +1182,21 @@ async def delete_cmds_only(ctx):
         try: await ctx.message.delete()
         except: pass
 
-class CmdsPaginationView(discord.ui.View):
-    def __init__(self, pages, author_id):
-        super().__init__(timeout=120)
-        self.pages = pages
-        self.current_page = 0
-        self.author_id = author_id
-        self.total_pages = len(pages)
-
-    def get_embed(self):
-        page_data = self.pages[self.current_page]
-        embed = discord.Embed(
-            title=page_data["title"],
-            description=page_data["description"],
-            color=0x9b59b6
-        )
-        for field in page_data.get("fields", []):
-            embed.add_field(name=field["name"], value=field["value"], inline=field.get("inline", False))
-        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} • Owner can use commands anywhere. Channel restriction applies to others.")
-        return embed
-
-    @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, custom_id="cmds_back")
-    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("You are not the one who ran this command.", ephemeral=True)
-            return
-        if self.current_page == 0:
-            await interaction.response.send_message("You are already on the first page.", ephemeral=True)
-            return
-        self.current_page -= 1
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
-
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, custom_id="cmds_next")
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("You are not the one who ran this command.", ephemeral=True)
-            return
-        if self.current_page == self.total_pages - 1:
-            await interaction.response.send_message("You are already on the last page.", ephemeral=True)
-            return
-        self.current_page += 1
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        try:
-            await self.message.edit(view=self)
-        except:
-            pass
-
 @bot.command(name="cmds")
 async def show_commands(ctx):
     await delete_cmds_only(ctx)
-    pages = [
-        {
-            "title": "RblXLua Bot Commands (1/2)",
-            "description": f"Hello {ctx.author.mention}",
-            "fields": [
-                {"name": "`Deobfuscator [.get]`", "value": "Fetch and deobfuscate code from a URL, attachment, or reply. Multi‑layer auto‑detection with retry and proxy fallback.", "inline": False},
-                {"name": "`Ping [.ping]`", "value": "Check the bot's latency (prefix version).", "inline": False},
-                {"name": "`Database [.db]`", "value": "`status` – check MongoDB connection; `clear` (owner only) – wipe all data.", "inline": False},
-            ]
-        },
-        {
-            "title": "RblXLua Bot Commands (2/2)",
-            "description": f"Hello {ctx.author.mention}",
-            "fields": [
-                {"name": "`Slash Commands`", "value": "`/ping` – Check bot latency\n`/channel_set` – Restrict commands to a channel\n`/channel_view` – Show current restriction\n`/channel_clear` – Remove restriction\n`/ticket` – Create ticket panel (admin)\n`/verification_system` – Set up verification with automatic 24h deadline (admin)\n`/verify` – Immediately apply Not Verified role to all unverified members (admin)\n`/active_checker` – Periodic @everyone ping (admin)\n`/bypass` – Bypass Delta/Platoboost/Lootlabs/Lootlink URLs\n`/auto_delete_messages` – Instant message deletion (admin)\n`/atd_view_channel` – View instant delete channels\n`/atd_remove_channel` – Remove instant delete channel (admin)\n`/timer_delete_msg` – Timer-based auto-delete (admin)\n`/talking_bot` – Enable talking bot in a channel (admin)",
-                "inline": False},
-            ]
-        }
-    ]
-
-    view = CmdsPaginationView(pages, ctx.author.id)
-    embed = view.get_embed()
-    try:
-        await ctx.send(embed=embed, view=view, mention_author=True)
-    except discord.HTTPException as e:
-        print(f"Failed to send .cmds embed: {e}")
-        await ctx.send("An error occurred while displaying the help menu.", mention_author=True)
+    embed = discord.Embed(
+        title="RblXLua Bot Commands",
+        description=f"**{ctx.author.mention}**",
+        color=0x2B2D31
+    )
+    embed.set_image(url="https://i.imgur.com/YOUR_IMAGE_ID.png")
+    embed.add_field(
+        name="",
+        value="Re-Launch the Updater or download the Updater from here: [Download](https://example.com)",
+        inline=False
+    )
+    await ctx.send(embed=embed, mention_author=True)
 
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted instantly")
 @app_commands.describe(
@@ -2153,8 +2088,7 @@ async def on_ready():
                         title="🔐 Server Verification",
                         description=(
                             "Welcome to the server! We are glad to Have you here.\n\n"
-                            "To gain access to all the channels and features, please verify yourself by clicking the **Verify on Website** button below.\n"
-                            "You will be redirected to our verification page where you must complete a short challenge.\n"
+                            "To gain access to all the channels and features, please verify yourself by clicking the **Verify** button below.\n"
                             "This helps us keep the server safe and secure."
                         ),
                         color=0x1e90ff
