@@ -55,11 +55,6 @@ if not MONGODB_URI:
     print("❌ MONGODB_URI missing")
     sys.exit(1)
 
-TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
-if not TURNSTILE_SECRET_KEY:
-    print("❌ TURNSTILE_SECRET_KEY missing")
-    sys.exit(1)
-
 GUILD_ID = int(os.getenv("GUILD_ID", 0))
 if not GUILD_ID:
     print("❌ GUILD_ID missing or invalid")
@@ -105,24 +100,6 @@ bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 user_cache = {}
 USER_CACHE_TTL = 3600
-
-def get_discord_user(user_id):
-    now = time.time()
-    if user_id in user_cache and (now - user_cache[user_id]['ts']) < USER_CACHE_TTL:
-        return user_cache[user_id]['data']
-    try:
-        future = asyncio.run_coroutine_threadsafe(bot.fetch_user(user_id), bot.loop)
-        user = future.result(timeout=5)
-        data = {
-            'username': user.name,
-            'display_name': user.display_name,
-            'avatar_url': str(user.display_avatar.url)
-        }
-        user_cache[user_id] = {'data': data, 'ts': now}
-        return data
-    except Exception as e:
-        print(f"Failed to fetch user {user_id}: {e}")
-        return {'username': str(user_id), 'display_name': str(user_id), 'avatar_url': ''}
 
 async def get_allowed_channel():
     if settings_col is None:
@@ -219,7 +196,7 @@ async def handle_talking_bot(message):
             r'\bdeobfuscate\b': "I can deobfuscate Prometheus, WeAreDevs, and many other obfuscators. Try my `.get` command.",
             r'\bobfuscate\b': "I used to obfuscate, but now I focus on helping with code and exploits. What do you need?",
             r'\bticket\b': "For support tickets, use the `/ticket` command to create a ticket panel.",
-            r'\bverify\b': "To verify, visit the website or use `/verification_system` to set it up.",
+            r'\bverify\b': "To verify, click the **Verify** button in the verification channel.",
             r'\bbypass\b': "I can help bypass Delta links. Use `/bypass` with the URL.",
             r'\bauto[- ]delete\b': "I have both instant and timer-based auto-delete. Use `/auto_delete_messages` or `/timer_delete_msg`.",
             r'\bactive[- ]checker\b': "Set up active pings with `/active_checker`.",
@@ -713,6 +690,57 @@ async def ticket_command(
     await interaction.channel.send(embed=embed, view=view)
     bot.add_view(view)
 
+class VerificationButton(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        button = discord.ui.Button(
+            label="Verify",
+            style=discord.ButtonStyle.primary,
+            custom_id="verify_button",
+            emoji="✅"
+        )
+        button.callback = self.verify_callback
+        self.add_item(button)
+
+    async def verify_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+
+        config = await asyncio.to_thread(verification_config_col.find_one, {"guild_id": guild.id})
+        if not config:
+            await interaction.followup.send("❌ Verification system is not set up in this server.", ephemeral=True)
+            return
+
+        verified_role_id = config.get("verified_role_id")
+        not_verified_role_id = config.get("not_verified_role_id")
+
+        verified_role = guild.get_role(verified_role_id) if verified_role_id else None
+        not_verified_role = guild.get_role(not_verified_role_id) if not_verified_role_id else None
+
+        if not verified_role:
+            await interaction.followup.send("❌ Verified role is missing. Please re-run /verification_system.", ephemeral=True)
+            return
+
+        if verified_role in member.roles:
+            await interaction.followup.send("✅ You are already verified!", ephemeral=True)
+            return
+
+        try:
+            await member.add_roles(verified_role, reason="Verified via button")
+            if not_verified_role and not_verified_role in member.roles:
+                await member.remove_roles(not_verified_role, reason="Verified via button")
+            await interaction.followup.send(f"✅ You have been verified! You now have the {verified_role.mention} role.", ephemeral=True)
+            await asyncio.to_thread(verified_users_col.update_one,
+                {"guild_id": guild.id, "user_id": member.id},
+                {"$set": {"verified_at": datetime.utcnow(), "verified_by": "button"}},
+                upsert=True
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to assign roles. Please check my permissions.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ An error occurred: {str(e)[:200]}", ephemeral=True)
+
 async def apply_not_verified_to_all(guild_id, not_verified_role_id):
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -781,14 +809,7 @@ def parse_duration(duration_str: str) -> int:
         raise ValueError("Invalid duration format. Use e.g., 1d, 12h, 30m, 45s")
 
 def get_verification_view():
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(
-        label="Verify",
-        style=discord.ButtonStyle.primary,
-        custom_id="verify_button",
-        emoji="✅"
-    ))
-    return view
+    return VerificationButton()
 
 @bot.tree.command(name="verification_system", description="Set up the verification system with an automatic deadline")
 @app_commands.describe(
@@ -1454,100 +1475,6 @@ async def slash_bypass(interaction: discord.Interaction, url: str):
     view = BypassView(url)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
-@app.route('/api/verify', methods=['POST'])
-def api_verify():
-    data = request.get_json()
-    if not data:
-        return jsonify({'success': False, 'message': 'Missing JSON body'}), 400
-
-    user_id = data.get('user_id')
-    cf_token = data.get('cf_token')
-    gender = data.get('gender', '')
-
-    if not user_id:
-        return jsonify({'success': False, 'message': 'Missing user_id'}), 400
-    if not cf_token:
-        return jsonify({'success': False, 'message': 'Missing cf_token'}), 400
-
-    async def validate_turnstile():
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                'secret': TURNSTILE_SECRET_KEY,
-                'response': cf_token
-            }
-            async with session.post('https://challenges.cloudflare.com/turnstile/v0/siteverify', data=payload) as resp:
-                result = await resp.json()
-                return result.get('success', False)
-
-    success = asyncio.run(validate_turnstile())
-    if not success:
-        return jsonify({'success': False, 'message': 'Turnstile challenge failed'}), 400
-
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return jsonify({'success': False, 'message': 'Guild not found'}), 500
-
-    config = asyncio.run(asyncio.to_thread(verification_config_col.find_one, {'guild_id': GUILD_ID}))
-    if not config:
-        return jsonify({'success': False, 'message': 'Verification system not set up for this guild'}), 400
-
-    not_verified_role_id = config['not_verified_role_id']
-    verified_role_id = config['verified_role_id']
-
-    not_verified_role = guild.get_role(not_verified_role_id)
-    verified_role = guild.get_role(verified_role_id)
-
-    if not not_verified_role or not verified_role:
-        return jsonify({'success': False, 'message': 'Roles are missing'}), 500
-
-    member = guild.get_member(int(user_id))
-    if not member:
-        return jsonify({'success': False, 'message': 'User not found in the server'}), 404
-
-    if verified_role in member.roles:
-        return jsonify({'success': False, 'message': 'User is already verified'}), 400
-
-    try:
-        asyncio.run_coroutine_threadsafe(member.add_roles(verified_role, reason='Verified via website'), bot.loop)
-        if not_verified_role in member.roles:
-            asyncio.run_coroutine_threadsafe(member.remove_roles(not_verified_role, reason='Verified via website'), bot.loop)
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to assign role: {str(e)}'}), 500
-
-    try:
-        asyncio.run(asyncio.to_thread(
-            verified_users_col.update_one,
-            {'guild_id': GUILD_ID, 'user_id': int(user_id)},
-            {'$set': {'verified_at': datetime.utcnow(), 'verified_by': 'website', 'gender': gender}},
-            upsert=True
-        ))
-    except Exception as e:
-        print(f"Failed to record verification: {e}")
-
-    return jsonify({'success': True, 'message': 'You are verified!'})
-
-@app.route('/api/verified_users', methods=['GET'])
-def get_verified_users():
-    try:
-        docs = asyncio.run(asyncio.to_thread(
-            lambda: list(verified_users_col.find({'guild_id': GUILD_ID}))
-        ))
-        result = []
-        for doc in docs:
-            user_id = doc['user_id']
-            user_data = get_discord_user(user_id)
-            result.append({
-                'user_id': user_id,
-                'username': user_data['username'],
-                'display_name': user_data['display_name'],
-                'avatar_url': user_data['avatar_url'],
-                'verified_at': doc['verified_at'].isoformat() if doc['verified_at'] else None,
-                'gender': doc.get('gender', '')
-            })
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 def decode_all_escapes(s: str) -> str:
     try:
         s = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1),16)), s)
@@ -2141,17 +2068,14 @@ def keep_alive():
         time.sleep(300)
 
 async def main():
-    # Start Flask in a separate thread (non-daemon to avoid shutdown issues)
     def run_flask():
         app.run(host="0.0.0.0", port=10000, threaded=True)
     flask_thread = threading.Thread(target=run_flask, daemon=False)
     flask_thread.start()
 
-    # Start keep-alive in a daemon thread (optional)
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    # Retry logic for bot login with exponential backoff
     retries = 0
     while True:
         try:
