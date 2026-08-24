@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import os
 import sys
 import time
+import asyncio
 import threading
 import discord
 from discord import File, app_commands
@@ -47,22 +48,22 @@ def ping(): return "pong"
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     print("❌ TOKEN missing")
-    exit(1)
+    sys.exit(1)
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
     print("❌ MONGODB_URI missing")
-    exit(1)
+    sys.exit(1)
 
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY")
 if not TURNSTILE_SECRET_KEY:
     print("❌ TURNSTILE_SECRET_KEY missing")
-    exit(1)
+    sys.exit(1)
 
 GUILD_ID = int(os.getenv("GUILD_ID", 0))
 if not GUILD_ID:
     print("❌ GUILD_ID missing or invalid")
-    exit(1)
+    sys.exit(1)
 
 OWNER_ID = 1445289457866506290
 
@@ -2139,18 +2140,44 @@ def keep_alive():
             pass
         time.sleep(300)
 
-if __name__ == "__main__":
-    from threading import Thread
+async def main():
+    # Start Flask in a separate thread (non-daemon to avoid shutdown issues)
     def run_flask():
         app.run(host="0.0.0.0", port=10000, threaded=True)
-    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread = threading.Thread(target=run_flask, daemon=False)
     flask_thread.start()
 
-    keep_alive_thread = Thread(target=keep_alive, daemon=True)
+    # Start keep-alive in a daemon thread (optional)
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
+    # Retry logic for bot login with exponential backoff
+    retries = 0
+    while True:
+        try:
+            await bot.start(TOKEN)
+            break
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                retries += 1
+                wait = min(2 ** retries, 60)
+                print(f"Rate limited (429). Retrying in {wait} seconds...")
+                await asyncio.sleep(wait)
+                continue
+            else:
+                print(f"HTTPException: {e}")
+                raise
+        except Exception as e:
+            print(f"Unhandled exception: {e}")
+            if retries >= 5:
+                print("Too many retries, exiting.")
+                sys.exit(1)
+            retries += 1
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
     try:
-        bot.run(TOKEN)
-    except Exception as e:
-        print(f"Bot crashed: {e}")
-        sys.exit(1)
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        asyncio.run(bot.close())
