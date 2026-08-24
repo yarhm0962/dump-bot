@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import os
 import sys
 import time
-import asyncio
 import threading
 import discord
 from discord import File, app_commands
@@ -2134,57 +2133,27 @@ async def on_ready():
 def keep_alive():
     while True:
         try:
+            import requests
             requests.get("http://localhost:10000/ping", timeout=5)
         except:
             pass
         time.sleep(300)
 
 if __name__ == "__main__":
+    # Start Flask in a background daemon thread
     from threading import Thread
-
     def run_flask():
         app.run(host="0.0.0.0", port=10000, threaded=True)
-
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
+    # Start a keep-alive thread (optional)
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    async def main():
-        retries = 0
-        while True:
-            try:
-                await bot.start(TOKEN)
-                break
-            except discord.errors.HTTPException as e:
-                if e.status == 429:
-                    retries += 1
-                    wait = min(2 ** retries, 60)
-                    print(f"Rate limited (429). Retrying in {wait} seconds...")
-                    await asyncio.sleep(wait)
-                    continue
-                else:
-                    print(f"HTTPException: {e}")
-                    raise
-            except RuntimeError as e:
-                if "Session is closed" in str(e):
-                    print("Session closed – restarting process.")
-                    await asyncio.sleep(5)
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
-                else:
-                    raise
-            except Exception as e:
-                print(f"Unhandled exception: {e}")
-                if retries >= 5:
-                    print("Too many retries, restarting.")
-                    await asyncio.sleep(5)
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
-                retries += 1
-                await asyncio.sleep(5)
-
+    # Run the bot – if it fails, exit so Render restarts
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Shutting down...")
-        asyncio.run(bot.close())
+        bot.run(TOKEN)
+    except Exception as e:
+        print(f"Bot crashed: {e}")
+        sys.exit(1)
