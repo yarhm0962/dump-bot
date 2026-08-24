@@ -1,9 +1,19 @@
 from flask import Flask, request, jsonify
+app = Flask(__name__)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/')
+def home(): return "✅ RblXLua Service Running"
+@app.route('/ping')
+def ping(): return "pong"
+
 import os
-import sys
-import time
-import asyncio
-import threading
 import discord
 from discord import File, app_commands
 from discord.ext import commands
@@ -16,6 +26,9 @@ import json
 import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
+import asyncio
+import threading
+import time
 import subprocess
 import tempfile
 from urllib.parse import urlparse, parse_qs, quote_plus
@@ -30,20 +43,6 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
-
-app = Flask(__name__)
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-@app.route('/')
-def home(): return "✅ RblXLua Service Running"
-@app.route('/ping')
-def ping(): return "pong"
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -2048,6 +2047,11 @@ async def get_command(ctx, *, link=None):
         await ctx.reply(embed=discord.Embed(title="❌ Error", color=0xe74c3c, description=f"{ctx.author.mention}\n{str(e)[:500]}"), mention_author=True)
         print(f"Deobf error: {e}")
 
+async def delete_cmds_only(ctx):
+    if ctx.invoked_with in ["cmds"]:
+        try: await ctx.message.delete()
+        except: pass
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as: {bot.user}")
@@ -2146,13 +2150,12 @@ if __name__ == "__main__":
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    # Retry loop with restart on session closed
     max_retries = 5
     retries = 0
     while True:
         try:
             bot.run(TOKEN)
-            break  # success
+            break
         except discord.errors.HTTPException as e:
             if e.status == 429:
                 retries += 1
@@ -2166,15 +2169,13 @@ if __name__ == "__main__":
         except RuntimeError as e:
             if "Session is closed" in str(e):
                 print("Session closed – restarting process.")
-                # Restart the whole script using execv
                 os.execv(sys.executable, [sys.executable] + sys.argv)
             else:
                 raise
         except Exception as e:
             print(f"Unhandled exception: {e}")
-            time.sleep(5)
-            # If we repeatedly fail, restart
             if retries >= max_retries:
                 print("Too many retries, restarting.")
                 os.execv(sys.executable, [sys.executable] + sys.argv)
             retries += 1
+            time.sleep(5)
