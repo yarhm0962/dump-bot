@@ -1,19 +1,9 @@
 from flask import Flask, request, jsonify
-app = Flask(__name__)
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-@app.route('/')
-def home(): return "✅ RblXLua Service Running"
-@app.route('/ping')
-def ping(): return "pong"
-
 import os
+import sys
+import time
+import asyncio
+import threading
 import discord
 from discord import File, app_commands
 from discord.ext import commands
@@ -26,9 +16,6 @@ import json
 import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
-import asyncio
-import threading
-import time
 import subprocess
 import tempfile
 from urllib.parse import urlparse, parse_qs, quote_plus
@@ -43,6 +30,20 @@ from pathlib import Path
 import shutil
 from typing import Union, Optional, Sequence, Callable
 from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/')
+def home(): return "✅ RblXLua Service Running"
+@app.route('/ping')
+def ping(): return "pong"
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
@@ -2128,8 +2129,7 @@ async def on_ready():
 def keep_alive():
     while True:
         try:
-            import requests
-            requests.get("http://localhost:10000/ping")
+            requests.get("http://localhost:10000/ping", timeout=5)
         except:
             pass
         time.sleep(300)
@@ -2138,35 +2138,43 @@ if __name__ == "__main__":
     from threading import Thread
 
     def run_flask():
-        app.run(host="0.0.0.0", port=10000)
+        app.run(host="0.0.0.0", port=10000, threaded=True)
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Optional keep alive thread (minimal impact)
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    # Main bot startup with retry logic using asyncio
-    async def main():
-        retries = 0
-        while True:
-            try:
-                await bot.start(TOKEN)
-                break
-            except discord.errors.HTTPException as e:
-                if e.status == 429:
-                    retries += 1
-                    wait = min(2 ** retries, 60)
-                    print(f"Rate limited (429). Retrying in {wait} seconds...")
-                    await bot.close()
-                    await asyncio.sleep(wait)
-                    continue
-                else:
-                    print(f"HTTPException: {e}")
-                    raise
-            except Exception as e:
-                print(f"Unexpected error: {e}")
+    # Retry loop with restart on session closed
+    max_retries = 5
+    retries = 0
+    while True:
+        try:
+            bot.run(TOKEN)
+            break  # success
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                retries += 1
+                wait = min(2 ** retries, 60)
+                print(f"Rate limited (429). Retrying in {wait} seconds...")
+                time.sleep(wait)
+                continue
+            else:
+                print(f"HTTPException: {e}")
                 raise
-
-    asyncio.run(main())
+        except RuntimeError as e:
+            if "Session is closed" in str(e):
+                print("Session closed – restarting process.")
+                # Restart the whole script using execv
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            else:
+                raise
+        except Exception as e:
+            print(f"Unhandled exception: {e}")
+            time.sleep(5)
+            # If we repeatedly fail, restart
+            if retries >= max_retries:
+                print("Too many retries, restarting.")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            retries += 1
