@@ -1177,26 +1177,24 @@ async def prefix_ping(ctx):
     embed.add_field(name="Response Time", value=f"`{response_time} ms`", inline=False)
     await ctx.reply(embed=embed, mention_author=True)
 
-async def delete_cmds_only(ctx):
-    if ctx.invoked_with in ["cmds"]:
-        try: await ctx.message.delete()
-        except: pass
-
 @bot.command(name="cmds")
 async def show_commands(ctx):
-    await delete_cmds_only(ctx)
-    embed = discord.Embed(
-        title="RblXLua Bot Commands",
-        description=f"**{ctx.author.mention}**",
-        color=0x2B2D31
-    )
-    embed.set_image(url="https://i.imgur.com/YOUR_IMAGE_ID.png")
-    embed.add_field(
-        name="",
-        value="Re-Launch the Updater or download the Updater from here: [Download](https://example.com)",
-        inline=False
-    )
-    await ctx.send(embed=embed, mention_author=True)
+    try:
+        embed = discord.Embed(
+            title="RblXLua Bot Commands",
+            description=f"**{ctx.author.mention}**",
+            color=0x2B2D31
+        )
+        embed.set_image(url="https://i.imgur.com/YOUR_IMAGE_ID.png")
+        embed.add_field(
+            name="",
+            value="Re-Launch the Updater or download the Updater from here: [Download](https://example.com)",
+            inline=False
+        )
+        await ctx.send(embed=embed, mention_author=True)
+    except Exception as e:
+        print(f"Error in .cmds: {e}")
+        await ctx.send("An error occurred while displaying the help menu.", mention_author=True)
 
 @bot.tree.command(name="auto_delete_messages", description="Add a channel where messages will be automatically deleted instantly")
 @app_commands.describe(
@@ -2139,27 +2137,24 @@ def keep_alive():
 if __name__ == "__main__":
     from threading import Thread
 
-    # Run Flask in a separate daemon thread
     def run_flask():
         app.run(host="0.0.0.0", port=10000)
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Keep alive thread (optional, but may cause issues; we'll keep it but handle exceptions)
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    # Retry bot login with exponential backoff on 429 rate limit
     retries = 0
     while True:
         try:
             bot.run(TOKEN)
-            break  # If successful, exit loop (bot.run blocks until disconnect)
+            break
         except discord.errors.HTTPException as e:
             if e.status == 429:
                 retries += 1
-                wait = min(2 ** retries, 60)  # Exponential backoff up to 60 seconds
+                wait = min(2 ** retries, 60)
                 print(f"Rate limited (429). Retrying in {wait} seconds...")
                 time.sleep(wait)
                 continue
