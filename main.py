@@ -2138,7 +2138,34 @@ def keep_alive():
 
 if __name__ == "__main__":
     from threading import Thread
-    def run_flask(): app.run(host="0.0.0.0", port=10000)
-    Thread(target=run_flask, daemon=True).start()
-    Thread(target=keep_alive, daemon=True).start()
-    bot.run(TOKEN)
+
+    # Run Flask in a separate daemon thread
+    def run_flask():
+        app.run(host="0.0.0.0", port=10000)
+
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # Keep alive thread (optional, but may cause issues; we'll keep it but handle exceptions)
+    keep_alive_thread = Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+
+    # Retry bot login with exponential backoff on 429 rate limit
+    retries = 0
+    while True:
+        try:
+            bot.run(TOKEN)
+            break  # If successful, exit loop (bot.run blocks until disconnect)
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                retries += 1
+                wait = min(2 ** retries, 60)  # Exponential backoff up to 60 seconds
+                print(f"Rate limited (429). Retrying in {wait} seconds...")
+                time.sleep(wait)
+                continue
+            else:
+                print(f"HTTPException: {e}")
+                raise
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            raise
