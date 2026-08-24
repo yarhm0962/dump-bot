@@ -1,51 +1,33 @@
-# RblXLua Dump Bot
+markdown
+# RblXLua Bot
 
-A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with anti‑tamper and anti‑environment logging, ticket management, Cloudflare Turnstile verification with gender selection, active checks, auto‑delete, and administrative utilities.
+A feature‑rich Discord bot for Lua deobfuscation, ticket management, verification with role assignment, active checkers, auto‑delete (instant and timer‑based), a talking bot, and administrative utilities.
 
 ---
 
-# Features:
-### Lua Deobfuscation
-- Fetch code from a link, attachment, or reply.
-- Multi‑layer deobfuscation: Prometheus, WeAreDevs, and a powerful fallback that unpacks Base64, XOR, string.char, and loadstring wrappers.
-- Displays a preview and optionally sends the full code as a file.
+## Features
 
-### Lua Obfuscation (Advanced)
-- Encrypts the source with Prometheus-style single-base64 chunk.
-- Wraps the result with built‑in **anti‑tamper** and **anti‑environment logging** protections.
-- The final output is a unique, self‑decrypting payload that resists static analysis and common deobfuscation attempts.
-- The anti‑tamper layer includes buffer integrity checks, RunService detection, and a security violation handler that kicks the player on failure.
-- The anti‑env layer hooks debug functions, proxies the environment, and detects logging attempts.
+- **Lua Deobfuscation** – Fetch code from a URL, attachment, or reply and run multi‑layer deobfuscation (Prometheus, WeAreDevs, enhanced fallback). Displays a preview and optionally sends the full code as a file.
 
-### Ticket System
-- Persistent ticket panels with custom roles, claim/unclaim functionality, and closing.
-- Supports multiple ping roles and an optional claim button.
+- **Ticket System** – Persistent ticket panels with custom roles, claim functionality, and closing.
 
-### Verification System
-- Restricts server access until users verify via a dedicated website.
-- **Intro Animation**: A cinematic lock‑and‑key SVG animation that plays on first visit.
-- **Gender Selection**: Users choose Girl, Gay, or Boy; the choice is saved in `localStorage` and never asked again.
-- **Cloudflare Turnstile**: “Ads verification” step.
-- **Real‑time Verified Users List**: Shows avatars, display names, timestamps, and gender icons.
-- **24‑hour Deadline**: Automatic countdown; unverified members receive the **Not Verified** role after the deadline.
-- **Re‑verification**: If a user loses the Verified role, they can verify again.
-- **Manual Verification Apply**: The `/verify` slash command instantly applies the **Not Verified** role to all currently unverified members, showing a progress estimate and final report.
+- **Verification System** – Restrict server access until users verify by clicking a **Verify** button. The bot automatically assigns a **Verified** role and a **Not Verified** role, with a 24‑hour deadline after which unverified members receive the Not Verified role.
 
-### Active Checker
-- Periodically ping @everyone in a specified channel to check user activity.
+- **Active Checker** – Periodically ping `@everyone` in a specified channel to check user activity.
 
-### Auto‑Delete Messages
-- Instantly delete all messages in chosen channels.
+- **Instant Auto‑Delete** – Delete every message as soon as it is sent in chosen channels.
 
-### Bypass Utility
-- Extract keys from obfuscated URLs (Delta, Platoboost, Lootlabs, Lootlink) using a Node.js script or Python fallback.
+- **Timer‑Based Auto‑Delete** – Delete all messages in a channel after a configurable period of inactivity. The timer resets whenever a new message is sent, and only triggers if no messages appear during the entire cooldown.
 
-### Slash & Prefix Commands
-- Modern slash commands and traditional prefix commands (`.`).
-- Command channel restriction with owner bypass.
+- **Talking Bot** – Enable a conversational bot in a specific channel that replies to user messages with relevant answers about Lua, exploits, Delta, and bot commands.
 
-### MongoDB Persistence
-- All settings, logs, tickets, verification records (including gender), and active checker configurations are stored in MongoDB.
+- **Bypass Utility** – Extract keys from obfuscated URLs (Delta‑style).
+
+- **Slash & Prefix Commands** – Modern slash commands and traditional prefix commands (`.`).
+
+- **Command Channel Restriction** – Limit commands to a single text channel (with owner bypass).
+
+- **MongoDB Persistence** – All settings, logs, tickets, verification records, and configurations are stored in MongoDB.
 
 ---
 
@@ -55,10 +37,11 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 
 | Command | Description |
 |---------|-------------|
-| `.ping` | Check bot latency. |
-| `.cmds` | Display this help menu (paginated). |
-| `.obf` | Obfuscate Lua code from a link, attachment, or pasted code. Uses advanced anti‑tamper and anti‑env protection. |
-| `.get` | Deobfuscate Lua code from a URL, attachment, or reply. |
+| `.get` | Fetch and deobfuscate code from a URL, attachment, or reply. Displays cleaned code with preview/file. |
+| `.cmds` | Show a help embed with an image and a download link. |
+| `.db status` | Check MongoDB connection status. |
+| `.db clear` | (Owner only) Clear all stored data. |
+| `.ping` | Check bot latency (prefix version). |
 
 ### Slash Commands (`/`)
 
@@ -69,27 +52,15 @@ A feature‑rich Discord bot for Lua deobfuscation, advanced obfuscation with an
 | `/channel_view` | Show the currently restricted channel. | None |
 | `/channel_clear` | Remove the channel restriction. | Administrator |
 | `/ticket` | Create a ticket panel with custom roles, claim button, embed color, etc. | Administrator |
-| `/verification_system` | Set up the verification system. Automatically sets a 24‑hour countdown deadline. The embed shows a timestamp; when it expires, all unverified members get the **Not Verified** role. The message includes a **Verify on Website** link button. | Administrator |
-| `/verify` | Immediately apply the **Not Verified** role to all members who are not yet verified. Shows an estimate of the time required and a final summary. | Administrator |
+| `/verification_system` | Set up the verification system. Creates a **Verify** button and a 24‑hour deadline. The selected role is given upon verification. All other channels are hidden from unverified members. | Administrator |
+| `/verify` | Immediately apply the **Not Verified** role to all currently unverified members. Shows an estimate of the time required. | Administrator |
 | `/active_checker` | Set up a periodic @everyone ping in a channel. | Administrator |
 | `/bypass` | Extract a key from a URL (Delta‑style bypass). | None |
-| `/auto_delete_messages` | Add a text channel to auto‑delete all new messages. | Administrator |
-| `/atd_view_channel` | View all channels currently set for auto‑deletion. | None |
-| `/atd_remove_channel` | Remove a channel from auto‑deletion. | Administrator |
-
----
-
-## Verification Website
-
-The verification website is a **single HTML file** with a modern, smooth, and animated experience:
-
-- **Intro Animation**: A realistic lock‑and‑key SVG animation that plays on first visit.
-- **Gender Selection**: Users select their gender (Girl, Gay, Boy). The choice is saved in `localStorage` and never asked again.
-- **Cloudflare Turnstile**: The “ads verification” challenge (sitekey included). The Verify button is disabled until the challenge is passed and a User ID is entered.
-- **Verification API**: The page sends a POST request to `/api/verify` with `user_id`, `cf_token`, and `gender`. The bot validates the token, assigns the Verified role, and stores the gender in the `verified_users` collection.
-- **Real‑time User List**: The verified users list is refreshed every 15 seconds and shows each user’s avatar, display name, username, verification timestamp, and a gender icon (Girl, Gay, Boy) with distinct colors.
-
-The website is fully self‑contained – no external dependencies besides the Turnstile script.
+| `/auto_delete_messages` | Enable instant deletion in a channel (all new messages are deleted immediately). Supports a `disable: True` option. | Administrator |
+| `/atd_view_channel` | View all channels with instant deletion active. | None |
+| `/atd_remove_channel` | Remove a channel from instant deletion. | Administrator |
+| `/timer_delete_msg` | Set up timer‑based auto‑delete. Requires a channel and a duration (e.g., `10s`, `5m`, `1h`). Supports `disable: True`. | Administrator |
+| `/talking_bot` | Enable the talking bot in a channel. The bot replies to user messages with context‑aware answers about Lua, exploits, and bot features. Supports `disable: True`. | Administrator |
 
 ---
 
@@ -100,8 +71,7 @@ The website is fully self‑contained – no external dependencies besides the T
 - Python 3.9 or higher
 - A MongoDB database (Atlas or self‑hosted)
 - A Discord Bot Token
-- Cloudflare Turnstile site key and secret key (for the web verification)
-- Node.js (optional, for the bypass script)
+- Cloudflare Turnstile site key and secret key (for web verification – optional, only if using the web verification page)
 
 ### 2. Environment Variables
 
@@ -111,7 +81,7 @@ Set these on your hosting platform (e.g., Render):
 |----------|-------------|
 | `TOKEN` | Your Discord bot token. |
 | `MONGODB_URI` | MongoDB connection string. |
-| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key. |
+| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key (for web verification). |
 | `GUILD_ID` | Your Discord server ID (integer). |
 
 Example:
@@ -159,7 +129,7 @@ The bot will start a Flask web server on port `10000` (for health checks and the
 - **Manage Channels** – For ticket creation and verification channel permission overrides.
 - **View Channel / Send Messages** – To function in designated channels.
 - **Read Message History** – For ticket and verification message updates.
-- **Manage Messages** – For auto‑delete functionality.
+- **Manage Messages** – For auto‑delete and timer‑delete functionality.
 - **Administrator** – Recommended for setup commands.
 
 ---
@@ -167,22 +137,24 @@ The bot will start a Flask web server on port `10000` (for health checks and the
 ## Database Collections
 
 - `settings` – Command channel restriction.
-- `usage_logs` – Logs of `.get`, `.obf`, etc.
+- `usage_logs` – Logs of `.get` usage.
 - `tickets` – Open/closed ticket data.
 - `ticket_panels` – Configuration for each ticket panel.
 - `verification_config` – Verification role, channel, message ID, deadline, and processed flag.
 - `active_checker_config` – Active checker interval and channel.
-- `auto_delete_config` – Channel IDs for auto‑deletion.
+- `auto_delete_config` – Channel IDs for instant deletion.
 - `verified_users` – Records of successful verifications: `guild_id`, `user_id`, `verified_at`, `verified_by`, and `gender` (string).
+- `timer_delete_config` – Channel ID and duration (in seconds) for timer‑based deletion.
+- `talking_bot_config` – Channel IDs where the talking bot is enabled.
 
 ---
 
 ## Customization
 
 - **Deobfuscation** – Modify the `PROMETHEUS_DEOBF_LUA` template or the `deobfuscate_code` fallback logic.
-- **Verification deadline** – The bot uses a fixed 24‑hour deadline; you can change `DEFAULT_VERIFICATION_DURATION` in the code to any value in seconds.
-- **Web verification** – Adjust the Turnstile site key in `index.html` and the API endpoint URL in the JavaScript if needed.
-- **Gender icons** – Edit the SVG markup in `index.html` to change the look of the Girl, Gay, and Boy icons.
+- **Verification deadline** – The bot uses a fixed 24‑hour deadline; change `DEFAULT_VERIFICATION_DURATION` in the code to any value in seconds.
+- **Web verification** – Adjust the Turnstile site key in `index.html` and the API endpoint URL if needed.
+- **Talking bot responses** – Edit the `responses` dictionary in `handle_talking_bot` to add or modify reply patterns.
 - **User cache TTL** – Modify `USER_CACHE_TTL` (in seconds) to control how often Discord user data is refreshed.
 
 ---
