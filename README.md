@@ -1,4 +1,3 @@
-markdown
 # RblXLua Bot
 
 A feature‑rich Discord bot for Lua deobfuscation, ticket management, verification with role assignment, active checkers, auto‑delete (instant and timer‑based), a talking bot, and administrative utilities.
