@@ -2143,24 +2143,30 @@ if __name__ == "__main__":
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
+    # Optional keep alive thread (minimal impact)
     keep_alive_thread = Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
 
-    retries = 0
-    while True:
-        try:
-            bot.run(TOKEN)
-            break
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                retries += 1
-                wait = min(2 ** retries, 60)
-                print(f"Rate limited (429). Retrying in {wait} seconds...")
-                time.sleep(wait)
-                continue
-            else:
-                print(f"HTTPException: {e}")
+    # Main bot startup with retry logic using asyncio
+    async def main():
+        retries = 0
+        while True:
+            try:
+                await bot.start(TOKEN)
+                break
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    retries += 1
+                    wait = min(2 ** retries, 60)
+                    print(f"Rate limited (429). Retrying in {wait} seconds...")
+                    await bot.close()
+                    await asyncio.sleep(wait)
+                    continue
+                else:
+                    print(f"HTTPException: {e}")
+                    raise
+            except Exception as e:
+                print(f"Unexpected error: {e}")
                 raise
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            raise
+
+    asyncio.run(main())
