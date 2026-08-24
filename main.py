@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import sys
 app = Flask(__name__)
 
 @app.after_request
@@ -2169,13 +2170,15 @@ if __name__ == "__main__":
         except RuntimeError as e:
             if "Session is closed" in str(e):
                 print("Session closed – restarting process.")
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                time.sleep(5)
+                continue
             else:
                 raise
         except Exception as e:
             print(f"Unhandled exception: {e}")
             if retries >= max_retries:
                 print("Too many retries, restarting.")
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                time.sleep(5)
+                continue
             retries += 1
             time.sleep(5)
